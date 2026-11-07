@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#1f7a4d">
+  <title>Digital Menu</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Malayalam:wght@400;600;700;800;900&display=swap">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="img/icon.svg">
+</head>
+<body>
+  <div class="hub" id="hub"></div>
+  <script src="js/config.js"></script>
+  <script src="js/vendor/supabase.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/common.js"></script>
+  <script>
+  (async function () {
+    const { t, esc } = DM;
+    const $hub = document.getElementById('hub');
+    let r = null;
+    try { r = await DMStore.getRestaurant(DM.slug()); } catch (e) { /* offline */ }
+    DM.demoBanner();
+    const q = '?r=' + encodeURIComponent(DM.slug());
+    function render() {
+      const name = r ? (DM.lang === 'ml' && r.name_ml ? r.name_ml : r.name) : DM.slug();
+      const cards = [
+        ['🧑‍🍳', t('waiter'), 'Opens the QR for a table · takes orders', 'waiter.html' + q],
+        ['🍳', t('kitchen'), 'Kitchen screen — big tables, beep', 'kitchen.html' + q],
+        ['🧾', t('counter'), 'Bills per table, mark paid, daily total', 'counter.html' + q],
+        ['⚙️', t('owner'), 'Menu, prices, out of stock, QR stickers', 'admin.html' + q],
+      ];
+      $hub.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="muted">${t('app')}</span>
+          <span style="background:var(--leaf);border-radius:999px;color:#fff">${DM.langToggleHTML()}</span></div>
+        <h1>${esc(name)}</h1>
+        ${r ? '' : `<p class="err">Hotel "${esc(DM.slug())}" not found</p>`}
+        <div class="hub-grid">${cards.map(([ic, b, s, h]) => `<a class="hub-a" href="${h}"><div class="ic">${ic}</div><div><b>${esc(b)}</b><span>${esc(s)}</span></div></a>`).join('')}</div>
+        ${DMStore.mode === 'demo' && r ? `<button class="btn big block" id="demo-cust" style="margin-top:16px">📱 ${t('demoCustomer')}</button>
+          <p class="muted" style="margin-top:12px;font-size:14px">Demo tip: open the Kitchen and Counter in other tabs, then order as a customer — it appears instantly. Mark the bill paid at the Counter and the customer menu closes.</p>` : ''}`;
+      const dc = document.getElementById('demo-cust');
+      if (dc) dc.onclick = async () => { const s = await DMStore.openTable(r.id, 1); window.open('menu.html?s=' + s.token, '_blank'); };
+    }
+    document.addEventListener('dm:lang', render);
+    render();
+  })();
+  </script>
+</body>
+</html>

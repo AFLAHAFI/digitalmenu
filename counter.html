@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#1f7a4d">
+  <title>Counter</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Malayalam:wght@400;600;700;800;900&display=swap">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="img/icon.svg">
+  <link rel="manifest" href="manifest.json">
+</head>
+<body>
+  <div id="top"></div>
+  <div class="wrap">
+    <div class="stats" id="stats"></div>
+    <h2 class="sec" id="h-open"></h2>
+    <div class="bills" id="bills"></div>
+    <h2 class="sec" id="h-paid"></h2>
+    <div class="paid-list" id="paid"></div>
+  </div>
+
+  <script src="js/config.js"></script>
+  <script src="js/vendor/supabase.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/common.js"></script>
+  <script>
+  (async function () {
+    const { t, esc, money } = DM;
+    const r = await DM.requireStaff();
+    DM.demoBanner();
+    document.title = t('counter') + ' · ' + r.name;
+
+    let open = [], paid = [], knownNew = null;
+    const $ = (id) => document.getElementById(id);
+
+    // group unpaid orders by table
+    function bills() {
+      const m = new Map();
+      open.filter((o) => !o.paid_at).forEach((o) => {
+        if (!m.has(o.table_no)) m.set(o.table_no, []);
+        m.get(o.table_no).push(o);
+      });
+      return [...m.entries()].sort((a, b) => a[0] - b[0]);
+    }
+    // merge the same dish across a table's orders for the printed bill
+    function mergedLines(list) {
+      const m = new Map();
+      list.forEach((o) => o.items.forEach((i) => {
+        const k = i.id + '|' + i.price;
+        if (!m.has(k)) m.set(k, { ...i, qty: 0 });
+        m.get(k).qty += i.qty;
+      }));
+      return [...m.values()];
+    }
+    const sum = (list) => list.reduce((s, o) => s + Number(o.total), 0);
+
+    function render() {
+      $('top').innerHTML = DM.staffHeader(r, '🧾 ' + t('counter'));
+      const cash = sum(paid.filter((o) => o.pay_method === 'cash'));
+      const upi = sum(paid.filter((o) => o.pay_method === 'upi'));
+      const b = bills();
+      $('stats').innerHTML = `
+        <div class="stat main"><div class="k">${t('todaySales')}</div><div class="v">${money(cash + upi)}</div></div>
+        <div class="stat"><div class="k">${t('cash')}</div><div class="v">${money(cash)}</div></div>
+        <div class="stat"><div class="k">${t('upi')}</div><div class="v">${money(upi)}</div></div>
+        <div class="stat"><div class="k">${t('openBills')}</div><div class="v">${money(b.reduce((s, [, l]) => s + sum(l), 0))}</div></div>`;
+      $('h-open').textContent = `${t('openBills')} (${b.length})`;
+      $('bills').innerHTML = b.length ? b.map(([tno, list]) => `
+        <div class="bill" data-table="${tno}">
+          <div class="bill-h"><span class="tno">${t('table')} ${tno}</span><span class="amt">${money(sum(list))}</span></div>
+          ${list.map((o) => `<div class="bill-o">
+              <div class="oh"><span>#${o.order_no} · ${DM.clock(o.created_at)} · <span class="status s-${o.status}">${t('st_' + o.status)}</span></span>
+                <button class="x-o" data-cancel="${o.id}">${t('cancel')}</button></div>
+              ${o.items.map((i) => `<div class="ol"><span>${i.qty} × ${esc(DM.itemName(i))}</span><span>${money(i.price * i.qty)}</span></div>`).join('')}
+              ${o.note ? `<div class="muted" style="font-size:13px">📝 ${esc(o.note)}</div>` : ''}
+            </div>`).join('')}
+          <div class="bill-act">
+            <button class="btn primary" data-pay="cash">${t('paidCash')}</button>
+            <button class="btn blue" data-pay="upi">${t('paidUpi')}</button>
+            <button class="btn" data-print>🖨</button>
+          </div>
+        </div>`).join('') : `<p class="muted pad">${t('noBills')}</p>`;
+
+      // paid today: one row per (table, payment moment)
+      const groups = new Map();
+      paid.forEach((o) => {
+        const k = o.table_no + '|' + o.paid_at;
+        if (!groups.has(k)) groups.set(k, { table: o.table_no, at: o.paid_at, method: o.pay_method, total: 0 });
+        groups.get(k).total += Number(o.total);
+      });
+      $('h-paid').textContent = `${t('paidToday')} (${groups.size})`;
+      $('paid').innerHTML = [...groups.values()].map((g) => `<div class="paid-row">
+          <span>${t('table')} ${g.table} · ${DM.clock(g.at)} · ${g.method === 'upi' ? t('upi') : t('cash')}</span><b>${money(g.total)}</b></div>`).join('')
+        || `<p class="muted pad">—</p>`;
+    }
+
+    async function refresh() {
+      const [o, p] = await Promise.all([DMStore.listOpenOrders(r.id), DMStore.listPaidSince(r.id, DM.startOfToday())]);
+      open = o; paid = p;
+      const ids = open.map((x) => x.id);
+      if (knownNew && ids.some((id) => !knownNew.has(id))) DM.beep(1, 520);
+      knownNew = new Set(ids);
+      render();
+    }
+
+    function printBill(tno) {
+      const list = bills().find(([n]) => n === tno)[1];
+      const el = document.createElement('div');
+      el.id = 'print-bill';
+      el.innerHTML = `<h3>${esc(r.name)}</h3>${r.name_ml ? `<div style="text-align:center">${esc(r.name_ml)}</div>` : ''}
+        <hr><div class="r"><span>${t('table')} ${tno}</span><span>${new Date().toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}</span></div><hr>
+        ${mergedLines(list).map((i) => `<div class="r"><span>${i.qty} × ${esc(i.name_en)}</span><span>${money(i.price * i.qty)}</span></div>`).join('')}
+        <hr><div class="r" style="font-size:16px;font-weight:bold"><span>${t('total')}</span><span>${money(sum(list))}</span></div><hr>
+        <div style="text-align:center">${t('thanks')}</div>`;
+      document.body.appendChild(el);
+      document.body.classList.add('printing-bill');
+      const done = () => { document.body.classList.remove('printing-bill'); el.remove(); window.removeEventListener('afterprint', done); };
+      window.addEventListener('afterprint', done);
+      window.print();
+      setTimeout(done, 1500);
+    }
+
+    document.body.addEventListener('click', async (e) => {
+      DM.unlockAudio();
+      const c = e.target.closest('[data-cancel]');
+      if (c) {
+        if (!confirm(t('cancelQ'))) return;
+        try { await DMStore.updateOrder(c.dataset.cancel, { status: 'cancelled' }); await refresh(); }
+        catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+        return;
+      }
+      const p = e.target.closest('[data-pay]');
+      if (p) {
+        const tno = Number(p.closest('[data-table]').dataset.table);
+        const method = p.dataset.pay;
+        if (!confirm(t('paidQ', { t: tno, m: method === 'upi' ? t('upi') : t('cash') }))) return;
+        p.disabled = true;
+        try { await DMStore.markTablePaid(r.id, tno, method); DM.toast('✓ ' + t('table') + ' ' + tno, 'good'); await refresh(); }
+        catch (err) { p.disabled = false; DM.toast(DM.errMsg(err), 'bad'); }
+        return;
+      }
+      const pr = e.target.closest('[data-print]');
+      if (pr) printBill(Number(pr.closest('[data-table]').dataset.table));
+    });
+    document.addEventListener('dm:lang', render);
+    setInterval(() => { if (document.visibilityState === 'visible') render(); }, 60000);
+
+    DM.live(r.id, { orders: true, items: false }, refresh);
+  })();
+  </script>
+</body>
+</html>

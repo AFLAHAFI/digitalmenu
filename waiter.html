@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#1f7a4d">
+  <title>Waiter</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Malayalam:wght@400;600;700;800;900&display=swap">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="img/icon.svg">
+  <link rel="manifest" href="manifest.json">
+</head>
+<body class="waiter">
+  <div class="sticky-head"><div id="tp"></div><div class="tabs" id="tabs"></div></div>
+  <div id="pane-order">
+    <div id="tables"></div>
+    <div id="ordering" class="hidden">
+      <div class="w-table-bar"><span id="w-table"></span>
+        <div class="acts"><button class="btn primary" id="qr-btn"></button><button class="btn" id="chg"></button></div></div>
+      <div id="menu"></div>
+    </div>
+  </div>
+  <div id="pane-ready" class="hidden"></div>
+  <div id="qr"></div>
+
+  <script src="js/config.js"></script>
+  <script src="js/vendor/supabase.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/common.js"></script>
+  <script src="js/menu-ui.js"></script>
+  <script src="js/vendor/qrcode.js"></script>
+  <script>
+  (async function () {
+    const { t, esc, money } = DM;
+    const r = await DM.requireStaff();
+    DM.demoBanner();
+    document.title = t('waiter') + ' · ' + r.name;
+    const $ = (id) => document.getElementById(id);
+    const base = location.href.replace(/[^/]*$/, '');
+
+    let tab = 'order', table = null, items = [], orders = [], sessions = [], readySeen = null, qrTable = null;
+    const menus = {};   // one cart per table, so the waiter can switch tables
+
+    const readyList = () => orders.filter((o) => o.status === 'ready').sort((a, b) => (a.ready_at || '').localeCompare(b.ready_at || ''));
+    const isOpen = (n) => sessions.some((s) => s.table_no === n);
+
+    function renderTop() {
+      $('tp').innerHTML = DM.staffHeader(r, '🧑‍🍳 ' + t('waiter'));
+      const n = readyList().length;
+      $('tabs').innerHTML = `<button class="tab ${tab === 'order' ? 'on' : ''}" data-tab="order">${t('takeOrder')}</button>
+        <button class="tab ${tab === 'ready' ? 'on' : ''}" data-tab="ready">${t('readyServe')}${n ? `<span class="badge">${n}</span>` : ''}</button>`;
+    }
+    function renderTables() {
+      const bill = new Map();
+      orders.filter((o) => !o.paid_at && o.status !== 'cancelled').forEach((o) => bill.set(o.table_no, (bill.get(o.table_no) || 0) + Number(o.total)));
+      $('tables').innerHTML = `<p class="center muted" style="margin:16px 0 0">${t('chooseTable')}</p>
+        <div class="table-picker">${Array.from({ length: r.tables_count }, (_, i) => {
+          const n = i + 1, amt = bill.get(n);
+          return `<button class="tbtn ${amt ? 'busy' : ''} ${isOpen(n) ? 'open' : ''}" data-t="${n}">${isOpen(n) ? '<span class="dot">📱</span>' : ''}${n}${amt ? `<small>${money(amt)}</small>` : ''}</button>`;
+        }).join('')}</div>`;
+    }
+    function renderReady() {
+      const list = readyList();
+      $('pane-ready').innerHTML = list.length ? list.map((o) => `<div class="ready-card" data-id="${o.id}">
+          <div><div class="rt">${t('table')} ${o.table_no}</div><div class="muted">#${o.order_no} · ${DM.ago(o.ready_at || o.created_at)}</div>
+            <ul>${o.items.map((i) => `<li>${i.qty} × ${esc(DM.itemName(i))}</li>`).join('')}</ul></div>
+          <button class="btn primary big" data-served>${t('markServed')}</button></div>`).join('')
+        : `<p class="center muted pad">${t('nothingReady')}</p>`;
+    }
+    function showPane() {
+      $('pane-order').classList.toggle('hidden', tab !== 'order');
+      $('pane-ready').classList.toggle('hidden', tab !== 'ready');
+      $('tables').classList.toggle('hidden', table !== null);
+      $('ordering').classList.toggle('hidden', table === null);
+      if (table !== null) {
+        $('w-table').textContent = `${t('table')} ${table}`;
+        $('qr-btn').textContent = '📱 ' + t('showQr');
+        $('chg').textContent = t('changeTable');
+        Object.entries(menus).forEach(([n, m]) => m.el.classList.toggle('hidden', Number(n) !== table));
+      }
+    }
+    function render() { renderTop(); renderTables(); renderReady(); showPane(); if (qrTable) drawQr(); }
+
+    // ---- the QR customers scan (one per table, until the bill is paid) ----
+    let qrToken = null;
+    async function openQr(n) {
+      try {
+        const s = await DMStore.openTable(r.id, n);
+        qrTable = n; qrToken = s.token; drawQr(); refreshNow();
+      } catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+    }
+    function drawQr() {
+      const url = base + 'menu.html?s=' + qrToken;
+      const qr = qrcode(0, 'M'); qr.addData(url); qr.make();
+      $('qr').innerHTML = `<div class="qr-modal">
+          <div class="qt">${t('table')} ${qrTable}</div>
+          <div class="muted">${t('qrFor')}</div>
+          ${qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true })}
+          <div class="acts">
+            <button class="btn primary big" data-qr-close>✓ ${t('ok')}</button>
+            <button class="btn danger" data-close-table>${t('closeTable')}</button>
+          </div>
+          ${DMStore.mode === 'demo' ? `<a href="${esc(url)}" target="_blank" style="margin-top:14px;font-size:13px">demo: open as customer ↗</a>` : ''}
+        </div>`;
+      DM.keepAwake();
+    }
+
+    function openTable(n) {
+      table = n;
+      if (!menus[n]) {
+        const el = document.createElement('div');
+        $('menu').appendChild(el);
+        const ui = DM.MenuUI(el, {
+          cartKey: 'dm_wcart_' + r.slug + '_' + n,
+          sheetTitle: () => `${t('orderFor')} ${n}`,
+          onSend: async (lines, note) => {
+            try {
+              await DMStore.waiterOrder({ rid: r.id, table: n, items: lines, note });
+            } catch (e) {
+              if (String(e.message).startsWith('OUT_OF_STOCK')) ui.setItems(await DMStore.listItems(r.id));
+              throw e;
+            }
+            DM.toast(t('waiterSent', { t: n }), 'good');
+            table = null; render(); window.scrollTo({ top: 0 });
+            return true;
+          },
+        });
+        menus[n] = { el, ui };
+        ui.setItems(items);
+      }
+      showPane(); window.scrollTo({ top: 0 });
+    }
+
+    document.body.addEventListener('click', async (e) => {
+      DM.unlockAudio();
+      const tb = e.target.closest('[data-tab]');
+      if (tb) { tab = tb.dataset.tab; render(); return; }
+      const tt = e.target.closest('#tables [data-t]');
+      if (tt) { openTable(Number(tt.dataset.t)); return; }
+      if (e.target.closest('#chg')) { table = null; render(); return; }
+      if (e.target.closest('#qr-btn')) { openQr(table); return; }
+      if (e.target.closest('[data-qr-close]')) { qrTable = null; $('qr').innerHTML = ''; return; }
+      if (e.target.closest('[data-close-table]')) {
+        if (!confirm(t('closeTableQ', { t: qrTable }))) return;
+        try { await DMStore.closeTable(r.id, qrTable); DM.toast('✓ ' + t('closeTable') + ' ' + qrTable, 'good'); }
+        catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+        qrTable = null; $('qr').innerHTML = ''; refreshNow();
+        return;
+      }
+      const sv = e.target.closest('[data-served]');
+      if (sv) {
+        const id = sv.closest('[data-id]').dataset.id;
+        const o = orders.find((x) => x.id === id); o.status = 'served'; render();
+        try { await DMStore.updateOrder(id, { status: 'served' }); }
+        catch (err) { o.status = 'ready'; render(); DM.toast(DM.errMsg(err), 'bad'); }
+      }
+    });
+    document.addEventListener('dm:lang', render);
+
+    const refreshNow = DM.live(r.id, { orders: true, items: true, sessions: true }, async () => {
+      const [it, os, ss] = await Promise.all([DMStore.listItems(r.id), DMStore.listOpenOrders(r.id), DMStore.listOpenSessions(r.id)]);
+      items = it; orders = os; sessions = ss;
+      Object.values(menus).forEach((m) => m.ui.setItems(items));
+      const ids = readyList().map((o) => o.id);
+      if (readySeen && ids.some((id) => !readySeen.has(id))) DM.beep(2, 990);
+      readySeen = new Set(ids);
+      // the QR on screen belongs to a table that was just paid/closed -> hide it
+      if (qrTable && !isOpen(qrTable)) { qrTable = null; $('qr').innerHTML = ''; }
+      // don't redraw the table grid under the waiter's finger mid-order
+      renderTop(); renderReady(); if (table === null) renderTables(); showPane();
+    });
+  })();
+  </script>
+</body>
+</html>

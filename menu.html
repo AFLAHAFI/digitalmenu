@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#1f7a4d">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Menu</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Malayalam:wght@400;600;700;800;900&display=swap">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="img/icon.svg">
+</head>
+<body>
+  <div id="head"></div>
+  <div id="menu"></div>
+  <div id="done" class="hidden"></div>
+
+  <script src="js/config.js"></script>
+  <script src="js/vendor/supabase.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/common.js"></script>
+  <script src="js/menu-ui.js"></script>
+  <script>
+  // Customer menu. Opens ONLY with the token from the QR the waiter shows
+  // (?s=...). When the bill is paid the token closes and so does this page.
+  (async function () {
+    const { t, esc, money } = DM;
+    const $head = document.getElementById('head');
+    const $menu = document.getElementById('menu');
+    const $done = document.getElementById('done');
+    const token = DM.param('s');
+    DM.demoBanner();
+
+    let info = null;          // { restaurant, table_no, items }
+    let orders = [];          // this table's orders
+    let view = 'menu', lastRes = null, closedNow = false, menu = null;
+
+    function lockScreen(title, sub, icon) {
+      closedNow = true;
+      $head.innerHTML = '';
+      $done.classList.add('hidden');
+      $menu.classList.remove('hidden');
+      $menu.innerHTML = `<div class="lock">
+          <div class="lock-ic">${icon}</div>
+          <h2>${esc(title)}</h2><p class="muted">${esc(sub)}</p>
+          <div style="margin-top:18px">${DM.langToggleHTML()}</div></div>`;
+      document.body.classList.remove('noscroll');
+      try { Object.keys(sessionStorage).filter((k) => k.startsWith('dm_cart_')).forEach((k) => sessionStorage.removeItem(k)); } catch (e) { /* ignore */ }
+    }
+    const showLocked = () => lockScreen(t('lockedTitle'), t('lockedSub'), '🔒');
+    const showClosed = () => lockScreen(t('closedTitle'), t('closedSub'), '🙏');
+    const isClosedErr = (e) => String(e && e.message).includes('SESSION_CLOSED');
+
+    if (!token) { showLocked(); document.addEventListener('dm:lang', showLocked); return; }
+
+    function renderHead() {
+      if (closedNow || !info) return;
+      const r = info.restaurant;
+      const name = DM.lang === 'ml' && r.name_ml ? r.name_ml : r.name;
+      const sub = DM.lang === 'ml' && r.name_ml ? r.name : (r.name_ml || '');
+      $head.innerHTML = `<div class="cust-head"><div class="row">
+          <div><h1>${esc(name)}</h1>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>
+          ${DM.langToggleHTML()}</div>
+          <span class="table-pill">${t('table')} ${info.table_no}</span>
+          ${orders.length && view === 'menu' ? `<button class="my-orders-btn" id="show-mine">${t('myShort')} (${orders.length}) ›</button>` : ''}
+        </div>`;
+      const b = document.getElementById('show-mine');
+      if (b) b.onclick = () => showDone(null);
+    }
+
+    function showDone(res) {
+      view = 'done'; lastRes = res;
+      $menu.classList.add('hidden'); $done.classList.remove('hidden');
+      window.scrollTo({ top: 0 });
+      renderDone(); renderHead();
+    }
+    function renderDone() {
+      if (closedNow) return;
+      const res = lastRes;
+      $done.innerHTML = `<div class="done">
+        ${res ? `<div class="tick">✓</div><h2>${t('sent')}</h2><p class="muted">${t('sentSub')}</p>
+          <p><b>${t('orderNo')} #${res.order_no}</b> · ${money(res.total)}</p>` : ''}
+        <div class="my-orders"><h3>${t('tableOrders')}</h3>
+          ${orders.map((o) => `<div class="mo">
+              <div><b>#${o.order_no}</b> <span class="muted">· ${DM.clock(o.created_at)} · ${money(o.total)}</span></div>
+              <span class="status s-${o.status}">${t('st_' + o.status)}</span></div>`).join('') || '<p class="muted">—</p>'}
+        </div>
+        <button class="btn primary big block" id="more">${t('orderMore')}</button>
+      </div>`;
+      document.getElementById('more').onclick = () => {
+        view = 'menu'; $done.classList.add('hidden'); $menu.classList.remove('hidden'); renderHead(); window.scrollTo({ top: 0 });
+      };
+    }
+
+    async function refresh() {
+      if (closedNow) return;
+      try {
+        const [m, os] = await Promise.all([DMStore.sessionMenu(token), DMStore.sessionOrders(token)]);
+        DM.setConn(true);
+        const first = !info;
+        info = m; orders = os;
+        if (first) {
+          document.title = m.restaurant.name;
+          menu = DM.MenuUI($menu, {
+            cartKey: 'dm_cart_' + token,
+            onSend: async (lines, note) => {
+              try {
+                const res = await DMStore.placeOrder({ token, items: lines, note });
+                orders = await DMStore.sessionOrders(token).catch(() => orders);
+                showDone(res);
+                return true;
+              } catch (e) {
+                if (isClosedErr(e)) { showClosed(); return false; }
+                if (String(e.message).startsWith('OUT_OF_STOCK')) refresh();
+                throw e;
+              }
+            },
+          });
+        }
+        menu.setItems(m.items);
+        renderHead();
+        if (view === 'done') renderDone();
+      } catch (e) {
+        if (isClosedErr(e)) { showClosed(); return; }
+        console.warn(e);
+        if (!info) $menu.innerHTML = `<div class="center-msg">${t('offline')}</div>`;
+        DM.setConn(false);
+      }
+    }
+
+    document.addEventListener('dm:lang', () => {
+      if (closedNow) { $menu.querySelector('.lock h2') && showClosedOrLocked(); return; }
+      renderHead(); if (view === 'done') renderDone();
+    });
+    function showClosedOrLocked() { showClosed(); }
+
+    await refresh();
+    // keep menu (stock), order status and "is the table still open?" fresh
+    setInterval(() => { if (document.visibilityState === 'visible') refresh(); }, 10000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(); });
+    window.addEventListener('online', refresh);
+    if (DMStore.onChange) DMStore.onChange(() => refresh());   // demo: instant across tabs
+  })();
+  </script>
+</body>
+</html>

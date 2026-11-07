@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <title>Kitchen</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Malayalam:wght@400;600;700;800;900&display=swap">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="img/icon.svg">
+  <link rel="manifest" href="manifest.json">
+</head>
+<body class="kitchen">
+  <div id="top"></div>
+  <div class="k-grid" id="grid"></div>
+
+  <script src="js/config.js"></script>
+  <script src="js/vendor/supabase.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/common.js"></script>
+  <script>
+  (async function () {
+    const { t, esc } = DM;
+    const r = await DM.requireStaff();
+    DM.demoBanner();
+    document.title = t('kitchen') + ' · ' + r.name;
+
+    let orders = [];
+    let seen = null;               // ids of 'new' orders already beeped for
+    let soundOn = localStorage.getItem('dm_k_sound') !== 'off';
+    const $top = document.getElementById('top');
+    const $grid = document.getElementById('grid');
+
+    // ---- "tap to start": browsers only allow sound after a tap ----
+    const ov = document.createElement('div');
+    ov.className = 'start-overlay';
+    const drawOv = () => (ov.innerHTML = `<div><div class="big-ic">🔔</div><h2>${t('tapStart')}</h2><p style="opacity:.7">${t('tapStartSub')}</p></div>`);
+    drawOv();
+    document.body.appendChild(ov);
+    ov.addEventListener('click', () => {
+      DM.unlockAudio(); DM.keepAwake();
+      if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+      if (soundOn) DM.beep(1, 660);
+      ov.remove();
+    });
+
+    function visible() {
+      const now = Date.now();
+      const rank = { new: 0, preparing: 1, ready: 2 };
+      return orders
+        .filter((o) => o.status === 'new' || o.status === 'preparing' ||
+          (o.status === 'ready' && now - new Date(o.ready_at || o.created_at).getTime() < 20 * 60000))
+        .sort((a, b) => rank[a.status] - rank[b.status] ||
+          (a.status === 'ready' ? (b.ready_at || '').localeCompare(a.ready_at || '') : a.created_at.localeCompare(b.created_at)));
+    }
+
+    function renderTop() {
+      const c = (s) => orders.filter((o) => o.status === s).length;
+      const time = new Date().toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+      $top.innerHTML = DM.staffHeader(r, '🍳 ' + t('kitchen'), `
+        <div class="k-stats">
+          <span class="k-stat s-new">${t('newOrders')} ${c('new')}</span>
+          <span class="k-stat s-preparing">${t('preparing')} ${c('preparing')}</span>
+        </div>
+        <span class="k-clock">${time}</span>
+        <button class="icon-btn" id="snd" title="sound">${soundOn ? '🔔' : '🔕'}</button>`);
+      document.getElementById('snd').onclick = () => {
+        soundOn = !soundOn; localStorage.setItem('dm_k_sound', soundOn ? 'on' : 'off');
+        DM.unlockAudio(); if (soundOn) DM.beep(1); renderTop();
+      };
+    }
+
+    function card(o) {
+      const m = DM.minutesAgo(o.created_at);
+      const btns = o.status === 'new'
+        ? `<button class="btn blue" data-act="preparing">${t('startPrep')}</button><button class="btn primary" data-act="ready">${t('markReady')}</button>`
+        : o.status === 'preparing'
+          ? `<button class="btn primary" data-act="ready">${t('markReady')}</button>`
+          : `<button class="btn" data-act="served">${t('markServed')}</button>`;
+      return `<div class="k-card st-${o.status}" data-id="${o.id}">
+        <div class="k-head">
+          <div class="k-table"><small>${t('table')}</small>${o.table_no}</div>
+          <div class="k-meta">#${o.order_no}${o.source === 'waiter' ? ' · 🧑‍🍳' : ' · 📱'}<br>
+            <span class="${m >= 15 && o.status !== 'ready' ? 'late' : ''}">${DM.ago(o.created_at)}</span><br>
+            <span class="status s-${o.status}">${t('st_' + o.status)}</span></div>
+        </div>
+        <ul class="k-items">${o.items.map((i) => `<li><span class="k-qty">${i.qty}×</span>
+          <span>${esc(i.name_ml || i.name_en)}${i.name_ml ? `<span class="en">${esc(i.name_en)}</span>` : ''}</span></li>`).join('')}</ul>
+        ${o.note ? `<div class="k-note">📝 ${esc(o.note)}</div>` : ''}
+        <div class="k-act">${btns}</div>
+      </div>`;
+    }
+
+    function render() {
+      renderTop();
+      const list = visible();
+      $grid.innerHTML = list.length ? list.map(card).join('') : `<div class="k-empty">✓ ${t('noOrders')}</div>`;
+    }
+
+    async function refresh() {
+      orders = await DMStore.listOpenOrders(r.id);
+      const newIds = orders.filter((o) => o.status === 'new').map((o) => o.id);
+      if (seen === null) seen = new Set(newIds);           // first load: no beep
+      const fresh = newIds.filter((id) => !seen.has(id));
+      fresh.forEach((id) => seen.add(id));
+      if (fresh.length && soundOn) DM.beep(3);
+      render();
+    }
+
+    $grid.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-act]'); if (!b) return;
+      const id = b.closest('[data-id]').dataset.id;
+      const status = b.dataset.act;
+      const patch = { status };
+      if (status === 'ready') patch.ready_at = new Date().toISOString();
+      const o = orders.find((x) => x.id === id);
+      const before = { ...o };
+      Object.assign(o, patch); render();                     // instant on screen
+      try { await DMStore.updateOrder(id, patch); }
+      catch (err) { Object.assign(o, before); render(); DM.toast(DM.errMsg(err), 'bad'); }
+    });
+
+    // keep reminding while an order is waiting > 1 minute untouched
+    setInterval(() => {
+      if (soundOn && orders.some((o) => o.status === 'new' && DM.minutesAgo(o.created_at) >= 1)) DM.beep(1, 740);
+    }, 45000);
+    setInterval(render, 30000);                               // update "x min" labels + clock
+    document.addEventListener('dm:lang', () => { render(); if (ov.isConnected) drawOv(); });
+
+    const refreshNow = DM.live(r.id, { orders: true, items: false }, refresh, 15000);
+  })();
+  </script>
+</body>
+</html>
