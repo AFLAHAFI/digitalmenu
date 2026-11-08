@@ -14,23 +14,26 @@
 <body class="kitchen">
   <div id="top"></div>
   <div class="k-grid" id="grid"></div>
+  <div id="stock"></div>
 
   <script src="js/config.js"></script>
   <script src="js/vendor/supabase.js"></script>
   <script src="js/store.js"></script>
   <script src="js/common.js"></script>
+  <script src="js/feed.js"></script>
   <script>
   (async function () {
     const { t, esc } = DM;
-    const r = await DM.requireStaff();
+    const { r, me } = await DM.requireStaff('kitchen');
     DM.demoBanner();
     document.title = t('kitchen') + ' · ' + r.name;
 
-    let orders = [];
+    let orders = [], items = [], stockOpen = false;
     let seen = null;               // ids of 'new' orders already beeped for
     let soundOn = localStorage.getItem('dm_k_sound') !== 'off';
     const $top = document.getElementById('top');
     const $grid = document.getElementById('grid');
+    const $stock = document.getElementById('stock');
 
     // ---- "tap to start": browsers only allow sound after a tap ----
     const ov = document.createElement('div');
@@ -55,20 +58,22 @@
           (a.status === 'ready' ? (b.ready_at || '').localeCompare(a.ready_at || '') : a.created_at.localeCompare(b.created_at)));
     }
 
+    // header is drawn once (so its menu stays open); counts + clock update in place
+    function renderHeader() {
+      $top.innerHTML = DM.staffHeader(r, me, 'kitchen', `
+        <div class="k-stats" id="kstats"></div>
+        <span class="k-clock" id="kclock"></span>
+        <button class="icon-btn" id="stock-btn" title="${esc(t('stockPanel'))}">📦</button>
+        <button class="icon-btn" id="snd" title="sound">${soundOn ? '🔔' : '🔕'}</button>`);
+      renderTop();
+    }
     function renderTop() {
       const c = (s) => orders.filter((o) => o.status === s).length;
-      const time = new Date().toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
-      $top.innerHTML = DM.staffHeader(r, '🍳 ' + t('kitchen'), `
-        <div class="k-stats">
-          <span class="k-stat s-new">${t('newOrders')} ${c('new')}</span>
-          <span class="k-stat s-preparing">${t('preparing')} ${c('preparing')}</span>
-        </div>
-        <span class="k-clock">${time}</span>
-        <button class="icon-btn" id="snd" title="sound">${soundOn ? '🔔' : '🔕'}</button>`);
-      document.getElementById('snd').onclick = () => {
-        soundOn = !soundOn; localStorage.setItem('dm_k_sound', soundOn ? 'on' : 'off');
-        DM.unlockAudio(); if (soundOn) DM.beep(1); renderTop();
-      };
+      const ks = document.getElementById('kstats'), kc = document.getElementById('kclock'), sn = document.getElementById('snd');
+      if (!ks) return;
+      ks.innerHTML = `<span class="k-stat s-new">${t('newOrders')} ${c('new')}</span><span class="k-stat s-preparing">${t('preparing')} ${c('preparing')}</span>`;
+      kc.textContent = new Date().toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+      sn.textContent = soundOn ? '🔔' : '🔕';
     }
 
     function card(o) {
@@ -98,27 +103,53 @@
       $grid.innerHTML = list.length ? list.map(card).join('') : `<div class="k-empty">✓ ${t('noOrders')}</div>`;
     }
 
-    async function refresh() {
-      orders = await DMStore.listOpenOrders(r.id);
-      const newIds = orders.filter((o) => o.status === 'new').map((o) => o.id);
-      if (seen === null) seen = new Set(newIds);           // first load: no beep
-      const fresh = newIds.filter((id) => !seen.has(id));
-      fresh.forEach((id) => seen.add(id));
-      if (fresh.length && soundOn) DM.beep(3);
-      render();
+    // ---- stock panel: kitchen marks dishes finished / available ----
+    function renderStock() {
+      if (!stockOpen) { $stock.innerHTML = ''; return; }
+      $stock.innerHTML = `<div class="stock-panel" data-stock-close><div class="sp-in" onclick="event.stopPropagation()">
+          <div class="sheet-h"><h3>📦 ${t('stockPanel')}</h3><button class="x" data-stock-close>✕</button></div>
+          ${items.map((i) => `<div class="stock-row ${i.in_stock ? '' : 'off'}">
+            <span>${esc(i.name_ml || i.name_en)}</span>
+            <label class="switch"><input type="checkbox" data-stock="${i.id}" ${i.in_stock ? 'checked' : ''}><span></span></label></div>`).join('')}
+        </div></div>`;
     }
+    async function loadItems() { items = await DMStore.listItems(r.id); if (stockOpen) renderStock(); }
 
-    $grid.addEventListener('click', async (e) => {
+    const feed = DM.orderFeed(r.id, {
+      items: true, onItems: loadItems,
+      onOrders(list) {
+        orders = list;
+        const newIds = orders.filter((o) => o.status === 'new').map((o) => o.id);
+        if (seen === null) seen = new Set(newIds);           // first load: no beep
+        const fresh = newIds.filter((id) => !seen.has(id));
+        fresh.forEach((id) => seen.add(id));
+        if (fresh.length && soundOn) DM.beep(3);
+        render();
+      },
+    });
+
+    document.body.addEventListener('click', async (e) => {
+      if (e.target.closest('#snd')) {
+        soundOn = !soundOn; localStorage.setItem('dm_k_sound', soundOn ? 'on' : 'off');
+        DM.unlockAudio(); if (soundOn) DM.beep(1); renderTop(); return;
+      }
+      if (e.target.closest('#stock-btn')) { stockOpen = true; renderStock(); loadItems(); return; }
+      if (e.target.closest('[data-stock-close]') && !e.target.closest('.switch')) { stockOpen = false; renderStock(); return; }
       const b = e.target.closest('[data-act]'); if (!b) return;
       const id = b.closest('[data-id]').dataset.id;
       const status = b.dataset.act;
-      const patch = { status };
-      if (status === 'ready') patch.ready_at = new Date().toISOString();
-      const o = orders.find((x) => x.id === id);
-      const before = { ...o };
-      Object.assign(o, patch); render();                     // instant on screen
-      try { await DMStore.updateOrder(id, patch); }
-      catch (err) { Object.assign(o, before); render(); DM.toast(DM.errMsg(err), 'bad'); }
+      const before = feed.get(id);
+      b.disabled = true;
+      const stamp = new Date().toISOString();
+      feed.patch(id, { status, ...(status === 'ready' ? { ready_at: stamp } : {}) });   // instant on screen
+      try { await DMStore.setOrderStatus(id, status); }
+      catch (err) { if (before) feed.patch(id, before); DM.toast(DM.errMsg(err), 'bad'); }
+    });
+    $stock.addEventListener('change', async (e) => {
+      const inp = e.target.closest('[data-stock]'); if (!inp) return;
+      const it = items.find((x) => x.id === inp.dataset.stock);
+      try { await DMStore.setStock(inp.dataset.stock, inp.checked); if (it) it.in_stock = inp.checked; renderStock(); DM.toast(t('saved'), 'good'); }
+      catch (err) { inp.checked = !inp.checked; DM.toast(DM.errMsg(err), 'bad'); }
     });
 
     // keep reminding while an order is waiting > 1 minute untouched
@@ -126,9 +157,8 @@
       if (soundOn && orders.some((o) => o.status === 'new' && DM.minutesAgo(o.created_at) >= 1)) DM.beep(1, 740);
     }, 45000);
     setInterval(render, 30000);                               // update "x min" labels + clock
-    document.addEventListener('dm:lang', () => { render(); if (ov.isConnected) drawOv(); });
-
-    const refreshNow = DM.live(r.id, { orders: true, items: false }, refresh, 15000);
+    document.addEventListener('dm:lang', () => { renderHeader(); render(); renderStock(); if (ov.isConnected) drawOv(); });
+    renderHeader();
   })();
   </script>
 </body>

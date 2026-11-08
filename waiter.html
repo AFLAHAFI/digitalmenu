@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.json">
 </head>
 <body class="waiter">
-  <div class="sticky-head"><div id="tp"></div><div class="tabs" id="tabs"></div></div>
+  <div class="sticky-head"><div id="tp"></div><div class="tabs" id="tabs"></div><div id="obx"></div></div>
   <div id="pane-order">
     <div id="tables"></div>
     <div id="ordering" class="hidden">
@@ -28,25 +28,35 @@
   <script src="js/vendor/supabase.js"></script>
   <script src="js/store.js"></script>
   <script src="js/common.js"></script>
+  <script src="js/feed.js"></script>
+  <script src="js/outbox.js"></script>
   <script src="js/menu-ui.js"></script>
   <script src="js/vendor/qrcode.js"></script>
   <script>
   (async function () {
     const { t, esc, money } = DM;
-    const r = await DM.requireStaff();
+    const { r, me } = await DM.requireStaff('waiter');
     DM.demoBanner();
     document.title = t('waiter') + ' · ' + r.name;
     const $ = (id) => document.getElementById(id);
-    const base = location.href.replace(/[^/]*$/, '');
+    const base = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '');
 
-    let tab = 'order', table = null, items = [], orders = [], sessions = [], readySeen = null, qrTable = null;
+    let tab = 'order', table = null, items = [], orders = [], sessions = [], readySeen = null, qrTable = null, qrToken = null, queued = 0;
+    let feed = null;
     const menus = {};   // one cart per table, so the waiter can switch tables
 
     const readyList = () => orders.filter((o) => o.status === 'ready').sort((a, b) => (a.ready_at || '').localeCompare(b.ready_at || ''));
     const isOpen = (n) => sessions.some((s) => s.table_no === n);
 
-    function renderTop() {
-      $('tp').innerHTML = DM.staffHeader(r, '🧑‍🍳 ' + t('waiter'));
+    // orders survive a network drop: kept on the phone, sent when back online
+    const outbox = DM.Outbox('w_' + r.slug, (job) => DMStore.waiterOrder({ rid: r.id, table: job.table, items: job.items, note: job.note, clientRef: job.clientRef }), {
+      onSent: () => { DM.toast(t('queuedSent'), 'good'); feed && feed.resync(); },
+      onFailed: (job, e) => DM.toast(t('table') + ' ' + job.table + ': ' + DM.errMsg(e), 'bad'),
+      onChange: (n) => { queued = n; $('obx').innerHTML = n ? `<div class="outbox-bar">⏳ ${t('queuedN', { n })}</div>` : ''; },
+    });
+
+    function renderHeader() { $('tp').innerHTML = DM.staffHeader(r, me, 'waiter'); }
+    function renderTabs() {
       const n = readyList().length;
       $('tabs').innerHTML = `<button class="tab ${tab === 'order' ? 'on' : ''}" data-tab="order">${t('takeOrder')}</button>
         <button class="tab ${tab === 'ready' ? 'on' : ''}" data-tab="ready">${t('readyServe')}${n ? `<span class="badge">${n}</span>` : ''}</button>`;
@@ -80,22 +90,24 @@
         Object.entries(menus).forEach(([n, m]) => m.el.classList.toggle('hidden', Number(n) !== table));
       }
     }
-    function render() { renderTop(); renderTables(); renderReady(); showPane(); if (qrTable) drawQr(); }
+    function render() { renderTabs(); renderTables(); renderReady(); showPane(); if (qrTable) drawQr(); }
 
     // ---- the QR customers scan (one per table, until the bill is paid) ----
-    let qrToken = null;
     async function openQr(n) {
+      const btn = $('qr-btn'); btn.disabled = true;
       try {
         const s = await DMStore.openTable(r.id, n);
-        qrTable = n; qrToken = s.token; drawQr(); refreshNow();
+        qrTable = n; qrToken = s.token; drawQr();
+        if (!isOpen(n)) sessions = [...sessions, { id: s.token, table_no: n }];
       } catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+      btn.disabled = false;
     }
     function drawQr() {
       const url = base + 'menu.html?s=' + qrToken;
       const qr = qrcode(0, 'M'); qr.addData(url); qr.make();
       $('qr').innerHTML = `<div class="qr-modal">
           <div class="qt">${t('table')} ${qrTable}</div>
-          <div class="muted">${t('qrFor')}</div>
+          <div style="opacity:.7">${t('qrFor')}</div>
           ${qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true })}
           <div class="acts">
             <button class="btn primary big" data-qr-close>✓ ${t('ok')}</button>
@@ -112,25 +124,44 @@
         const el = document.createElement('div');
         $('menu').appendChild(el);
         const ui = DM.MenuUI(el, {
-          cartKey: 'dm_wcart_' + r.slug + '_' + n,
+          cartKey: 'dm_wcart_' + r.slug + '_' + n, compact: true,
           sheetTitle: () => `${t('orderFor')} ${n}`,
           onSend: async (lines, note) => {
-            try {
-              await DMStore.waiterOrder({ rid: r.id, table: n, items: lines, note });
-            } catch (e) {
-              if (String(e.message).startsWith('OUT_OF_STOCK')) ui.setItems(await DMStore.listItems(r.id));
+            let res;
+            try { res = await outbox.send({ table: n, items: lines, note }); }
+            catch (e) {
+              if (String(e.message).startsWith('OUT_OF_STOCK')) feed.resync();
               throw e;
             }
-            DM.toast(t('waiterSent', { t: n }), 'good');
+            DM.toast(res && res.queued ? t('queued') : t('waiterSent', { t: n }), res && res.queued ? 'warn' : 'good');
             table = null; render(); window.scrollTo({ top: 0 });
             return true;
           },
         });
         menus[n] = { el, ui };
-        ui.setItems(items);
+        ui.setItems(items.filter(Boolean), r.category_photos);
       }
       showPane(); window.scrollTo({ top: 0 });
     }
+
+    async function loadItems() { items = await DMStore.listItems(r.id); Object.values(menus).forEach((m) => m.ui.setItems(items, r.category_photos)); }
+    async function loadSessions() {
+      sessions = await DMStore.listOpenSessions(r.id);
+      if (qrTable && !isOpen(qrTable)) { qrTable = null; $('qr').innerHTML = ''; }   // paid/closed -> hide QR
+      if (table === null) renderTables();
+    }
+
+    feed = DM.orderFeed(r.id, {
+      items: true, sessions: true, onItems: loadItems, onSessions: loadSessions,
+      onOrders(list) {
+        orders = list;
+        const ids = readyList().map((o) => o.id);
+        if (readySeen && ids.some((id) => !readySeen.has(id))) DM.beep(2, 990);
+        readySeen = new Set(ids);
+        // don't redraw the table grid under the waiter's finger mid-order
+        renderTabs(); renderReady(); if (table === null) renderTables(); showPane();
+      },
+    });
 
     document.body.addEventListener('click', async (e) => {
       DM.unlockAudio();
@@ -143,33 +174,23 @@
       if (e.target.closest('[data-qr-close]')) { qrTable = null; $('qr').innerHTML = ''; return; }
       if (e.target.closest('[data-close-table]')) {
         if (!confirm(t('closeTableQ', { t: qrTable }))) return;
-        try { await DMStore.closeTable(r.id, qrTable); DM.toast('✓ ' + t('closeTable') + ' ' + qrTable, 'good'); }
+        const n = qrTable;
+        try { await DMStore.closeTable(r.id, n); DM.toast('✓ ' + t('closeTable') + ' ' + n, 'good'); }
         catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
-        qrTable = null; $('qr').innerHTML = ''; refreshNow();
+        qrTable = null; $('qr').innerHTML = ''; loadSessions();
         return;
       }
       const sv = e.target.closest('[data-served]');
       if (sv) {
         const id = sv.closest('[data-id]').dataset.id;
-        const o = orders.find((x) => x.id === id); o.status = 'served'; render();
-        try { await DMStore.updateOrder(id, { status: 'served' }); }
-        catch (err) { o.status = 'ready'; render(); DM.toast(DM.errMsg(err), 'bad'); }
+        sv.disabled = true;
+        feed.patch(id, { status: 'served' });
+        try { await DMStore.setOrderStatus(id, 'served'); }
+        catch (err) { feed.patch(id, { status: 'ready' }); DM.toast(DM.errMsg(err), 'bad'); }
       }
     });
-    document.addEventListener('dm:lang', render);
-
-    const refreshNow = DM.live(r.id, { orders: true, items: true, sessions: true }, async () => {
-      const [it, os, ss] = await Promise.all([DMStore.listItems(r.id), DMStore.listOpenOrders(r.id), DMStore.listOpenSessions(r.id)]);
-      items = it; orders = os; sessions = ss;
-      Object.values(menus).forEach((m) => m.ui.setItems(items));
-      const ids = readyList().map((o) => o.id);
-      if (readySeen && ids.some((id) => !readySeen.has(id))) DM.beep(2, 990);
-      readySeen = new Set(ids);
-      // the QR on screen belongs to a table that was just paid/closed -> hide it
-      if (qrTable && !isOpen(qrTable)) { qrTable = null; $('qr').innerHTML = ''; }
-      // don't redraw the table grid under the waiter's finger mid-order
-      renderTop(); renderReady(); if (table === null) renderTables(); showPane();
-    });
+    document.addEventListener('dm:lang', () => { renderHeader(); render(); });
+    renderHeader(); render();
   })();
   </script>
 </body>

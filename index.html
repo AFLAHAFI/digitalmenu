@@ -18,32 +18,37 @@
   <script src="js/store.js"></script>
   <script src="js/common.js"></script>
   <script>
+  // Staff start page. Waiter / kitchen / cashier go straight to their screen;
+  // owner and manager see every screen.
   (async function () {
     const { t, esc } = DM;
-    const $hub = document.getElementById('hub');
-    let r = null;
-    try { r = await DMStore.getRestaurant(DM.slug()); } catch (e) { /* offline */ }
+    const { r, me } = await DM.requireStaff(null);
     DM.demoBanner();
-    const q = '?r=' + encodeURIComponent(DM.slug());
+    if (!DM.param('stay') && ['waiter', 'kitchen', 'cashier'].includes(me.role)) {
+      location.replace(DM.link(DM.homeFor(me.role), r)); return;
+    }
+    const SUB = {
+      waiter: 'Opens the QR for a table · takes orders', kitchen: 'Big table numbers, beep, stock on/off',
+      counter: 'Bills per table, mark paid, today\'s total', reports: 'Sales, busy hours, top dishes, Excel',
+      admin: 'Menu & photos, staff logins, look, activity',
+    };
     function render() {
-      const name = r ? (DM.lang === 'ml' && r.name_ml ? r.name_ml : r.name) : DM.slug();
-      const cards = [
-        ['🧑‍🍳', t('waiter'), 'Opens the QR for a table · takes orders', 'waiter.html' + q],
-        ['🍳', t('kitchen'), 'Kitchen screen — big tables, beep', 'kitchen.html' + q],
-        ['🧾', t('counter'), 'Bills per table, mark paid, daily total', 'counter.html' + q],
-        ['⚙️', t('owner'), 'Menu, prices, out of stock, QR stickers', 'admin.html' + q],
-      ];
-      $hub.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center">
+      const name = DM.lang === 'ml' && r.name_ml ? r.name_ml : r.name;
+      $hub.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
           <span class="muted">${t('app')}</span>
-          <span style="background:var(--leaf);border-radius:999px;color:#fff">${DM.langToggleHTML()}</span></div>
+          <span style="display:flex;gap:6px">${DM.langToggleHTML()}<button class="lang-btn" data-theme-toggle>${DM.themeIcon()}</button></span></div>
+        ${r.logo_url ? `<img src="${esc(r.logo_url)}" alt="" style="width:64px;height:64px;border-radius:16px;margin-top:12px;object-fit:cover">` : ''}
         <h1>${esc(name)}</h1>
-        ${r ? '' : `<p class="err">Hotel "${esc(DM.slug())}" not found</p>`}
-        <div class="hub-grid">${cards.map(([ic, b, s, h]) => `<a class="hub-a" href="${h}"><div class="ic">${ic}</div><div><b>${esc(b)}</b><span>${esc(s)}</span></div></a>`).join('')}</div>
-        ${DMStore.mode === 'demo' && r ? `<button class="btn big block" id="demo-cust" style="margin-top:16px">📱 ${t('demoCustomer')}</button>
-          <p class="muted" style="margin-top:12px;font-size:14px">Demo tip: open the Kitchen and Counter in other tabs, then order as a customer — it appears instantly. Mark the bill paid at the Counter and the customer menu closes.</p>` : ''}`;
+        <p class="muted" style="margin:0">${esc(me.display_name || me.username || '')} · ${t('r_' + me.role)}</p>
+        <div class="hub-grid">${DM.screensFor(me.role).map((s) => `<a class="hub-a" href="${DM.link(s, r)}"><div class="ic">${DM.SCREEN_ICON[s]}</div>
+          <div><b>${esc(DM.screenTitle(s))}</b><span>${esc(SUB[s])}</span></div></a>`).join('')}</div>
+        ${DMStore.mode === 'demo' ? `<button class="btn big block" id="demo-cust" style="margin-top:16px">📱 ${t('demoCustomer')}</button>
+          <p class="muted" style="margin-top:12px;font-size:14px">Demo tip: open Kitchen and Counter in other tabs, then order as a customer — it appears instantly. Mark the bill paid at the Counter and the customer menu closes.</p>`
+          : `<button class="btn block" data-signout style="margin-top:16px">⇄ ${t('switchUser')}</button>`}`;
       const dc = document.getElementById('demo-cust');
       if (dc) dc.onclick = async () => { const s = await DMStore.openTable(r.id, 1); window.open('menu.html?s=' + s.token, '_blank'); };
     }
+    const $hub = document.getElementById('hub');
     document.addEventListener('dm:lang', render);
     render();
   })();

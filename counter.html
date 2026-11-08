@@ -25,17 +25,18 @@
   <script src="js/vendor/supabase.js"></script>
   <script src="js/store.js"></script>
   <script src="js/common.js"></script>
+  <script src="js/feed.js"></script>
   <script>
   (async function () {
     const { t, esc, money } = DM;
-    const r = await DM.requireStaff();
+    const { r, me } = await DM.requireStaff('counter');
     DM.demoBanner();
     document.title = t('counter') + ' · ' + r.name;
 
-    let open = [], paid = [], knownNew = null;
+    let open = [], paid = [], knownIds = null;
+    const busyTables = new Set();          // tables with a payment in progress (no double tap)
     const $ = (id) => document.getElementById(id);
 
-    // group unpaid orders by table
     function bills() {
       const m = new Map();
       open.filter((o) => !o.paid_at).forEach((o) => {
@@ -44,7 +45,6 @@
       });
       return [...m.entries()].sort((a, b) => a[0] - b[0]);
     }
-    // merge the same dish across a table's orders for the printed bill
     function mergedLines(list) {
       const m = new Map();
       list.forEach((o) => o.items.forEach((i) => {
@@ -56,8 +56,8 @@
     }
     const sum = (list) => list.reduce((s, o) => s + Number(o.total), 0);
 
+    function renderHeader() { $('top').innerHTML = DM.staffHeader(r, me, 'counter'); }
     function render() {
-      $('top').innerHTML = DM.staffHeader(r, '🧾 ' + t('counter'));
       const cash = sum(paid.filter((o) => o.pay_method === 'cash'));
       const upi = sum(paid.filter((o) => o.pay_method === 'upi'));
       const b = bills();
@@ -77,13 +77,12 @@
               ${o.note ? `<div class="muted" style="font-size:13px">📝 ${esc(o.note)}</div>` : ''}
             </div>`).join('')}
           <div class="bill-act">
-            <button class="btn primary" data-pay="cash">${t('paidCash')}</button>
-            <button class="btn blue" data-pay="upi">${t('paidUpi')}</button>
-            <button class="btn" data-print>🖨</button>
+            <button class="btn primary" data-pay="cash" ${busyTables.has(tno) ? 'disabled' : ''}>${t('paidCash')}</button>
+            <button class="btn blue" data-pay="upi" ${busyTables.has(tno) ? 'disabled' : ''}>${t('paidUpi')}</button>
+            <button class="btn" data-print aria-label="${esc(t('print'))}">🖨</button>
           </div>
         </div>`).join('') : `<p class="muted pad">${t('noBills')}</p>`;
 
-      // paid today: one row per (table, payment moment)
       const groups = new Map();
       paid.forEach((o) => {
         const k = o.table_no + '|' + o.paid_at;
@@ -96,28 +95,35 @@
         || `<p class="muted pad">—</p>`;
     }
 
-    async function refresh() {
-      const [o, p] = await Promise.all([DMStore.listOpenOrders(r.id), DMStore.listPaidSince(r.id, DM.startOfToday())]);
-      open = o; paid = p;
-      const ids = open.map((x) => x.id);
-      if (knownNew && ids.some((id) => !knownNew.has(id))) DM.beep(1, 520);
-      knownNew = new Set(ids);
-      render();
-    }
+    async function loadPaid() { paid = await DMStore.listPaidSince(r.id, DM.startOfToday()); render(); }
+
+    const feed = DM.orderFeed(r.id, {
+      extraRefresh: loadPaid,
+      onOrders(list) {
+        open = list;
+        const ids = open.map((x) => x.id);
+        if (knownIds && ids.some((id) => !knownIds.has(id))) DM.beep(1, 520);
+        knownIds = new Set(ids);
+        render();
+      },
+    });
 
     function printBill(tno) {
-      const list = bills().find(([n]) => n === tno)[1];
+      const entry = bills().find(([n]) => n === tno); if (!entry) return;
+      const list = entry[1];
       const el = document.createElement('div');
       el.id = 'print-bill';
       el.innerHTML = `<h3>${esc(r.name)}</h3>${r.name_ml ? `<div style="text-align:center">${esc(r.name_ml)}</div>` : ''}
         <hr><div class="r"><span>${t('table')} ${tno}</span><span>${new Date().toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}</span></div><hr>
         ${mergedLines(list).map((i) => `<div class="r"><span>${i.qty} × ${esc(i.name_en)}</span><span>${money(i.price * i.qty)}</span></div>`).join('')}
         <hr><div class="r" style="font-size:16px;font-weight:bold"><span>${t('total')}</span><span>${money(sum(list))}</span></div><hr>
+        ${r.upi_id ? `<div style="text-align:center">UPI: ${esc(r.upi_id)}</div>` : ''}
         <div style="text-align:center">${t('thanks')}</div>`;
       document.body.appendChild(el);
       document.body.classList.add('printing-bill');
-      const done = () => { document.body.classList.remove('printing-bill'); el.remove(); window.removeEventListener('afterprint', done); };
-      window.addEventListener('afterprint', done);
+      let cleaned = false;
+      const done = () => { if (cleaned) return; cleaned = true; document.body.classList.remove('printing-bill'); el.remove(); };
+      window.addEventListener('afterprint', done, { once: true });
       window.print();
       setTimeout(done, 1500);
     }
@@ -127,27 +133,32 @@
       const c = e.target.closest('[data-cancel]');
       if (c) {
         if (!confirm(t('cancelQ'))) return;
-        try { await DMStore.updateOrder(c.dataset.cancel, { status: 'cancelled' }); await refresh(); }
-        catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+        c.disabled = true;
+        try { await DMStore.setOrderStatus(c.dataset.cancel, 'cancelled'); feed.patch(c.dataset.cancel, { status: 'cancelled' }); }
+        catch (err) { c.disabled = false; DM.toast(DM.errMsg(err), 'bad'); }
         return;
       }
       const p = e.target.closest('[data-pay]');
       if (p) {
         const tno = Number(p.closest('[data-table]').dataset.table);
+        if (busyTables.has(tno)) return;
         const method = p.dataset.pay;
         if (!confirm(t('paidQ', { t: tno, m: method === 'upi' ? t('upi') : t('cash') }))) return;
-        p.disabled = true;
-        try { await DMStore.markTablePaid(r.id, tno, method); DM.toast('✓ ' + t('table') + ' ' + tno, 'good'); await refresh(); }
-        catch (err) { p.disabled = false; DM.toast(DM.errMsg(err), 'bad'); }
+        busyTables.add(tno); render();
+        try {
+          await DMStore.markTablePaid(r.id, tno, method);
+          DM.toast('✓ ' + t('table') + ' ' + tno, 'good');
+          await feed.resync(); await loadPaid();
+        } catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+        busyTables.delete(tno); render();
         return;
       }
       const pr = e.target.closest('[data-print]');
       if (pr) printBill(Number(pr.closest('[data-table]').dataset.table));
     });
-    document.addEventListener('dm:lang', render);
-    setInterval(() => { if (document.visibilityState === 'visible') render(); }, 60000);
-
-    DM.live(r.id, { orders: true, items: false }, refresh);
+    document.addEventListener('dm:lang', () => { renderHeader(); render(); });
+    setInterval(() => { if (document.visibilityState === 'visible') loadPaid().catch(() => {}); }, 60000);   // also rolls over at midnight
+    renderHeader();
   })();
   </script>
 </body>

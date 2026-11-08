@@ -12,6 +12,7 @@
   <link rel="icon" href="img/icon.svg">
 </head>
 <body>
+  <div id="obx"></div>
   <div id="head"></div>
   <div id="menu"></div>
   <div id="done" class="hidden"></div>
@@ -20,6 +21,7 @@
   <script src="js/vendor/supabase.js"></script>
   <script src="js/store.js"></script>
   <script src="js/common.js"></script>
+  <script src="js/outbox.js"></script>
   <script src="js/menu-ui.js"></script>
   <script>
   // Customer menu. Opens ONLY with the token from the QR the waiter shows
@@ -29,38 +31,42 @@
     const $head = document.getElementById('head');
     const $menu = document.getElementById('menu');
     const $done = document.getElementById('done');
+    const $obx = document.getElementById('obx');
     const token = DM.param('s');
     DM.demoBanner();
 
-    let info = null;          // { restaurant, table_no, items }
-    let orders = [];          // this table's orders
-    let view = 'menu', lastRes = null, closedNow = false, menu = null;
+    const CACHE = 'dm_menu_' + token;
+    let info = null;          // { restaurant, menu_version, table_no, items }
+    let orders = [];
+    let view = 'menu', lastRes = null, closedNow = false, menu = null, outbox = null;
 
-    function lockScreen(title, sub, icon) {
+    function lockScreen(kind) {
       closedNow = true;
-      $head.innerHTML = '';
-      $done.classList.add('hidden');
-      $menu.classList.remove('hidden');
-      $menu.innerHTML = `<div class="lock">
-          <div class="lock-ic">${icon}</div>
+      const [title, sub, icon] = kind === 'closed' ? [t('closedTitle'), t('closedSub'), '🙏'] : [t('lockedTitle'), t('lockedSub'), '🔒'];
+      $head.innerHTML = ''; $obx.innerHTML = '';
+      $done.classList.add('hidden'); $menu.classList.remove('hidden');
+      $menu.innerHTML = `<div class="lock"><div class="lock-ic">${icon}</div>
           <h2>${esc(title)}</h2><p class="muted">${esc(sub)}</p>
           <div style="margin-top:18px">${DM.langToggleHTML()}</div></div>`;
       document.body.classList.remove('noscroll');
-      try { Object.keys(sessionStorage).filter((k) => k.startsWith('dm_cart_')).forEach((k) => sessionStorage.removeItem(k)); } catch (e) { /* ignore */ }
+      try {
+        localStorage.removeItem(CACHE); localStorage.removeItem('dm_outbox_c_' + token);
+        Object.keys(sessionStorage).filter((k) => k.startsWith('dm_cart_')).forEach((k) => sessionStorage.removeItem(k));
+      } catch (e) { /* ignore */ }
+      document.addEventListener('dm:lang', () => lockScreen(kind), { once: true });
     }
-    const showLocked = () => lockScreen(t('lockedTitle'), t('lockedSub'), '🔒');
-    const showClosed = () => lockScreen(t('closedTitle'), t('closedSub'), '🙏');
     const isClosedErr = (e) => String(e && e.message).includes('SESSION_CLOSED');
 
-    if (!token) { showLocked(); document.addEventListener('dm:lang', showLocked); return; }
+    if (!token) { lockScreen('locked'); return; }
 
     function renderHead() {
       if (closedNow || !info) return;
       const r = info.restaurant;
       const name = DM.lang === 'ml' && r.name_ml ? r.name_ml : r.name;
       const sub = DM.lang === 'ml' && r.name_ml ? r.name : (r.name_ml || '');
-      $head.innerHTML = `<div class="cust-head"><div class="row">
-          <div><h1>${esc(name)}</h1>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>
+      $head.innerHTML = `<div class="cust-head ${r.banner_url ? 'has-banner' : ''}" ${r.banner_url ? `style="background-image:url('${esc(r.banner_url)}')"` : ''}>
+          <div class="row"><div class="brand">${r.logo_url ? `<img class="c-logo" src="${esc(r.logo_url)}" alt="">` : ''}
+            <div><h1>${esc(name)}</h1>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div></div>
           ${DM.langToggleHTML()}</div>
           <span class="table-pill">${t('table')} ${info.table_no}</span>
           ${orders.length && view === 'menu' ? `<button class="my-orders-btn" id="show-mine">${t('myShort')} (${orders.length}) ›</button>` : ''}
@@ -78,9 +84,11 @@
     function renderDone() {
       if (closedNow) return;
       const res = lastRes;
+      const waiting = res && res.queued;
       $done.innerHTML = `<div class="done">
-        ${res ? `<div class="tick">✓</div><h2>${t('sent')}</h2><p class="muted">${t('sentSub')}</p>
-          <p><b>${t('orderNo')} #${res.order_no}</b> · ${money(res.total)}</p>` : ''}
+        ${res ? `<div class="tick ${waiting ? 'wait' : ''}">${waiting ? '⏳' : '✓'}</div>
+          <h2>${waiting ? t('queued') : t('sent')}</h2>${waiting ? '' : `<p class="muted">${t('sentSub')}</p>
+          <p><b>${t('orderNo')} #${res.order_no}</b> · ${money(res.total)}</p>`}` : ''}
         <div class="my-orders"><h3>${t('tableOrders')}</h3>
           ${orders.map((o) => `<div class="mo">
               <div><b>#${o.order_no}</b> <span class="muted">· ${DM.clock(o.created_at)} · ${money(o.total)}</span></div>
@@ -93,53 +101,69 @@
       };
     }
 
-    async function refresh() {
-      if (closedNow) return;
-      try {
-        const [m, os] = await Promise.all([DMStore.sessionMenu(token), DMStore.sessionOrders(token)]);
-        DM.setConn(true);
-        const first = !info;
-        info = m; orders = os;
-        if (first) {
-          document.title = m.restaurant.name;
-          menu = DM.MenuUI($menu, {
-            cartKey: 'dm_cart_' + token,
-            onSend: async (lines, note) => {
-              try {
-                const res = await DMStore.placeOrder({ token, items: lines, note });
-                orders = await DMStore.sessionOrders(token).catch(() => orders);
-                showDone(res);
-                return true;
-              } catch (e) {
-                if (isClosedErr(e)) { showClosed(); return false; }
-                if (String(e.message).startsWith('OUT_OF_STOCK')) refresh();
-                throw e;
-              }
-            },
-          });
-        }
-        menu.setItems(m.items);
-        renderHead();
-        if (view === 'done') renderDone();
-      } catch (e) {
-        if (isClosedErr(e)) { showClosed(); return; }
-        console.warn(e);
-        if (!info) $menu.innerHTML = `<div class="center-msg">${t('offline')}</div>`;
-        DM.setConn(false);
+    function applyMenu(m) {
+      info = m;
+      document.title = m.restaurant.name;
+      DM.applyBrand(m.restaurant.theme_color);
+      if (!menu) {
+        $menu.innerHTML = '';
+        menu = DM.MenuUI($menu, {
+          cartKey: 'dm_cart_' + token,
+          onSend: async (lines, note) => {
+            try {
+              const res = await outbox.send({ items: lines, note });
+              if (!res.queued) await refresh(true);
+              showDone(res);
+              return true;
+            } catch (e) {
+              if (isClosedErr(e)) { lockScreen('closed'); return false; }
+              if (String(e.message).startsWith('OUT_OF_STOCK')) refresh(true, true);
+              throw e;
+            }
+          },
+        });
       }
+      menu.setItems(m.items, m.restaurant.category_photos || {});
+      renderHead();
     }
 
-    document.addEventListener('dm:lang', () => {
-      if (closedNow) { $menu.querySelector('.lock h2') && showClosedOrLocked(); return; }
-      renderHead(); if (view === 'done') renderDone();
-    });
-    function showClosedOrLocked() { showClosed(); }
+    // cheap poll: is the table open? did the menu change? order statuses
+    let refreshing = false;
+    async function refresh(force, menuToo) {
+      if (closedNow || (refreshing && !force)) return;
+      refreshing = true;
+      try {
+        const st = await DMStore.sessionState(token);
+        DM.setConn(true);
+        if (!st.open) { lockScreen('closed'); return; }
+        orders = st.orders || [];
+        if (!info || menuToo || st.menu_version !== info.menu_version) {
+          const m = await DMStore.sessionMenu(token);
+          try { localStorage.setItem(CACHE, JSON.stringify(m)); } catch (e) { /* full: skip cache */ }
+          applyMenu(m);
+        } else renderHead();
+        if (view === 'done') renderDone();
+      } catch (e) {
+        if (isClosedErr(e)) { lockScreen('closed'); return; }
+        console.warn(e);
+        if (!info) $menu.innerHTML = `<div class="center-msg">${t('offline')}</div>`;
+        if (DM.isNetErr(e)) DM.setConn(false);
+      } finally { refreshing = false; }
+    }
 
-    await refresh();
-    // keep menu (stock), order status and "is the table still open?" fresh
-    setInterval(() => { if (document.visibilityState === 'visible') refresh(); }, 10000);
+    outbox = DM.Outbox('c_' + token, (job) => DMStore.placeOrder({ token, items: job.items, note: job.note, clientRef: job.clientRef }), {
+      onSent: () => { DM.toast(t('queuedSent'), 'good'); refresh(true); },
+      onFailed: (job, e) => { if (isClosedErr(e)) lockScreen('closed'); else DM.toast(DM.errMsg(e), 'bad'); },
+      onChange: (n) => { if (!closedNow) $obx.innerHTML = n ? `<div class="outbox-bar">⏳ ${t('queuedN', { n })}</div>` : ''; },
+    });
+
+    // show the saved menu instantly, then check with the server
+    try { const c = JSON.parse(localStorage.getItem(CACHE)); if (c && c.items) applyMenu(c); } catch (e) { /* ignore */ }
+    document.addEventListener('dm:lang', () => { if (closedNow) return; renderHead(); if (view === 'done') renderDone(); });
+    await refresh(true);
+    setInterval(() => { if (document.visibilityState === 'visible') refresh(); }, 8000);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(); });
-    window.addEventListener('online', refresh);
+    window.addEventListener('online', () => refresh(true));
     if (DMStore.onChange) DMStore.onChange(() => refresh());   // demo: instant across tabs
   })();
   </script>

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#1f7a4d">
+  <title>Reports</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Malayalam:wght@400;600;700;800;900&display=swap">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="img/icon.svg">
+  <link rel="manifest" href="manifest.json">
+</head>
+<body>
+  <div id="top"></div>
+  <div class="wrap">
+    <div class="range no-print" id="range"></div>
+    <div id="out"></div>
+  </div>
+
+  <script src="js/config.js"></script>
+  <script src="js/vendor/supabase.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/common.js"></script>
+  <script src="js/charts.js"></script>
+  <script>
+  (async function () {
+    const { t, esc, money } = DM;
+    const { r, me } = await DM.requireStaff('reports');
+    DM.demoBanner();
+    document.title = t('reports') + ' · ' + r.name;
+    const $ = (id) => document.getElementById(id);
+
+    const day0 = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+    const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+    const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const PRESETS = {
+      today: () => [day0(new Date()), addDays(day0(new Date()), 1)],
+      yesterday: () => [addDays(day0(new Date()), -1), day0(new Date())],
+      last7: () => [addDays(day0(new Date()), -6), addDays(day0(new Date()), 1)],
+      last30: () => [addDays(day0(new Date()), -29), addDays(day0(new Date()), 1)],
+      thisMonth: () => { const d = day0(new Date()); d.setDate(1); return [d, addDays(day0(new Date()), 1)]; },
+    };
+    let preset = 'today', from, to, data = null, loading = false;
+    [from, to] = PRESETS.today();
+
+    function renderHeader() { $('top').innerHTML = DM.staffHeader(r, me, 'reports'); }
+    function renderRange() {
+      $('range').innerHTML = Object.keys(PRESETS).map((k) => `<button class="chip ${preset === k ? 'on' : ''}" data-preset="${k}">${t(k)}</button>`).join('') +
+        `<label>${t('from')}<input type="date" id="d-from" value="${ymd(from)}"></label>
+         <label>${t('to')}<input type="date" id="d-to" value="${ymd(addDays(to, -1))}"></label>
+         <button class="btn sm" id="d-go">${t('show')}</button>`;
+    }
+    const kpi = (k, v, s, main) => `<div class="stat ${main ? 'main' : ''}"><div class="k">${k}</div><div class="v">${v}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`;
+
+    function render() {
+      if (!data) { $('out').innerHTML = `<div class="card"><p class="muted">${loading ? '…' : ''}</p></div>`; return; }
+      const d = data;
+      const period = `${from.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })} – ${addDays(to, -1).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+      if (!d.orders && !d.cancelled) {
+        $('out').innerHTML = `<h2 class="sec">${esc(r.name)} · ${period}</h2><div class="card"><p class="muted">${t('noData')}</p></div>`;
+        return;
+      }
+      const avgBill = d.bills ? d.paid / d.bills : 0;
+      const days = []; for (let x = new Date(from); x < to; x = addDays(x, 1)) days.push(ymd(x));
+      const byDay = new Map((d.by_day || []).map((x) => [x.day, x]));
+      const hours = new Map((d.by_hour || []).map((x) => [x.hour, x]));
+      const hList = (d.by_hour || []).length ? d.by_hour.map((x) => x.hour) : [];
+      const hMin = hList.length ? Math.min(...hList) : 8, hMax = hList.length ? Math.max(...hList) : 22;
+      $('out').innerHTML = `
+        <h2 class="sec">${esc(r.name)} · ${period}</h2>
+        <div class="kpis">
+          ${kpi(t('sales'), money(d.sales), d.unpaid ? `${t('unpaid')}: ${money(d.unpaid)}` : '', true)}
+          ${kpi(t('orders'), d.orders, `${d.by_source.customer} ${t('customerQr')} · ${d.by_source.waiter} ${t('waiter')}`)}
+          ${kpi(t('bills'), d.bills, `${t('avgBill')}: ${money(Math.round(avgBill))}`)}
+          ${kpi(t('itemsSold'), d.items_sold)}
+          ${kpi(t('prepTime'), d.avg_prep_min != null ? d.avg_prep_min + ' ' + t('min') : '—')}
+          ${kpi(t('cancelled'), d.cancelled, d.cancelled ? money(d.cancelled_value) : '')}
+        </div>
+        <div class="card"><b>${t('cash')} / ${t('upi')}</b><div style="margin-top:8px">${DM.splitBar(Number(d.cash), Number(d.upi), t('cash'), t('upi'), money)}</div></div>
+        ${days.length > 1 ? `<div class="card"><h3>${t('salesByDay')}</h3><div class="chart-scroll">${DM.columnChart(days.map((k) => {
+            const x = byDay.get(k); const dt = new Date(k + 'T00:00');
+            return { label: dt.getDate() + '/' + (dt.getMonth() + 1), value: x ? Number(x.sales) : 0, title: `${k}: ${money(x ? x.sales : 0)} · ${x ? x.orders : 0} ${t('orders')}` };
+          }))}</div></div>` : ''}
+        <div class="card"><h3>${t('busyHours')}</h3><div class="chart-scroll">${DM.columnChart(
+          Array.from({ length: hMax - hMin + 1 }, (_, i) => { const h = hMin + i, x = hours.get(h);
+            return { label: (h % 12 || 12) + (h < 12 ? 'a' : 'p'), value: x ? x.orders : 0, title: `${h}:00 — ${x ? x.orders : 0} ${t('orders')} · ${money(x ? x.sales : 0)}` }; }),
+          { fmt: (v) => String(Math.round(v)) })}</div></div>
+        <div class="grid2">
+          <div class="card"><h3>${t('topItems')}</h3>${DM.barList((d.top_items || []).map((x) => ({
+            label: DM.lang === 'ml' && x.name_ml ? x.name_ml : x.name_en, sub: DM.lang === 'ml' && x.name_ml ? x.name_en : '', value: Number(x.qty), amount: Number(x.amount) })),
+            { fmt: (v, x) => `${v} · ${money(x.amount)}` })}</div>
+          <div class="card"><h3>${t('byStaff')}</h3>${DM.barList((d.by_waiter || []).map((x) => ({
+            label: x.is_customer ? '📱 ' + t('customerQr') : (x.name || '—'), value: Number(x.sales), orders: x.orders })),
+            { fmt: (v, x) => `${money(v)} · ${x.orders}` })}</div>
+        </div>
+        <div class="no-print" style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 30px">
+          <button class="btn primary" id="csv">⬇ ${t('downloadCsv')}</button>
+          <button class="btn" id="prn">🖨 ${t('dayClose')}</button>
+        </div>`;
+    }
+
+    async function load() {
+      loading = true; data = null; render();
+      try { data = await DMStore.report(r.id, from.toISOString(), to.toISOString()); }
+      catch (err) { $('out').innerHTML = `<div class="card err">${esc(DM.errMsg(err))}</div>`; loading = false; return; }
+      loading = false; render();
+    }
+
+    async function downloadCsv() {
+      try {
+        const rows = await DMStore.reportOrders(r.id, from.toISOString(), to.toISOString());
+        const head = ['Order no', 'Date', 'Time', 'Table', 'Status', 'Source', 'Staff', 'Items', 'Total', 'Payment', 'Paid at'];
+        const q = (v) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+        const lines = [head.join(',')].concat(rows.map((o) => {
+          const c = new Date(o.created_at);
+          return [o.order_no, ymd(c), c.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), o.table_no, o.status, o.source,
+            o.staff || '', o.items, o.total, o.pay_method || '', o.paid_at ? new Date(o.paid_at).toLocaleString('en-IN') : ''].map(q).join(',');
+        }));
+        const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });   // BOM so Excel reads Malayalam
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `${r.slug}-orders-${ymd(from)}_${ymd(addDays(to, -1))}.csv`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      } catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+    }
+
+    document.body.addEventListener('click', (e) => {
+      const p = e.target.closest('[data-preset]');
+      if (p) { preset = p.dataset.preset; [from, to] = PRESETS[preset](); renderRange(); load(); return; }
+      if (e.target.closest('#d-go')) {
+        const f = $('d-from').value, tt = $('d-to').value;
+        if (!f || !tt) return;
+        const a = day0(new Date(f + 'T00:00')), b = addDays(day0(new Date(tt + 'T00:00')), 1);
+        if (b <= a) { DM.toast(t('from') + ' > ' + t('to'), 'bad'); return; }
+        if ((b - a) / 864e5 > 400) { DM.toast('Max 400 days', 'bad'); return; }
+        preset = 'custom'; from = a; to = b; renderRange(); load(); return;
+      }
+      if (e.target.closest('#csv')) { downloadCsv(); return; }
+      if (e.target.closest('#prn')) window.print();
+    });
+    document.addEventListener('dm:lang', () => { renderHeader(); renderRange(); render(); });
+    renderHeader(); renderRange(); load();
+  })();
+  </script>
+</body>
+</html>

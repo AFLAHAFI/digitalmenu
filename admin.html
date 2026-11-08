@@ -20,128 +20,263 @@
   <script src="js/vendor/supabase.js"></script>
   <script src="js/store.js"></script>
   <script src="js/common.js"></script>
+  <script src="js/cropper.js"></script>
   <script>
   (async function () {
     const { t, esc, money } = DM;
-    let r = await DM.requireStaff();
+    let { r, me } = await DM.requireStaff('admin');
     DM.demoBanner();
     document.title = t('owner') + ' · ' + r.name;
     const $ = (id) => document.getElementById(id);
-    let tab = 'menu', items = [], editing = null;
-    const base = location.href.replace(/[^/]*$/, '');      // folder of this page
-    const link = (page, extra = '') => `${base}${page}?r=${encodeURIComponent(r.slug)}${extra}`;
+    const isOwner = me.role === 'owner';
+    const base = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '');
+    let tab = localStorage.getItem('dm_admin_tab') || 'menu', items = [], staff = [], editing = null, busy = false;
+    const ROLES = ['owner', 'manager', 'cashier', 'waiter', 'kitchen'];
+    const canManage = (role) => isOwner || ['waiter', 'kitchen', 'cashier'].includes(role);
+    const COLORS = ['#1f7a4d', '#0e6e6e', '#1e5aa8', '#6b3fa0', '#b23a48', '#c25e00', '#8a6d1d', '#333333'];
 
     function renderTabs() {
-      $('tp').innerHTML = DM.staffHeader(r, '⚙️ ' + t('owner'));
-      $('tabs').innerHTML = [['menu', t('menuItems')], ['qr', t('tablesQr')], ['settings', t('settings')]]
+      $('tp').innerHTML = DM.staffHeader(r, me, 'admin');
+      $('tabs').innerHTML = [['menu', '🍽 ' + t('menuItems')], ['staff', '👥 ' + t('staffTab')], ['look', '🎨 ' + t('brandTab')],
+        ['tables', '🪑 ' + t('tablesQr')], ['activity', '🕘 ' + t('activity')], ['settings', '⚙️ ' + t('settings')]]
         .map(([k, l]) => `<button class="tab ${tab === k ? 'on' : ''}" data-tab="${k}">${l}</button>`).join('');
     }
+    function render() {
+      renderTabs();
+      ({ menu: renderMenu, staff: renderStaff, look: renderLook, tables: renderTables, activity: renderActivity, settings: renderSettings }[tab] || renderMenu)();
+    }
+    const cats = () => [...new Set(items.map((i) => i.category))];
 
-    // ---------------- Menu items ----------------
+    // =================== MENU ===================
     function renderMenu() {
-      const cats = [...new Set(items.map((i) => i.category))];
       $('pane').innerHTML = `<button class="btn primary big block" data-new>${t('addItem')}</button>` +
-        cats.map((c) => `<h2 class="sec">${esc(c)}</h2>` + items.filter((i) => i.category === c).map((i) => `
+        cats().map((c) => {
+          const list = items.filter((i) => i.category === c);
+          return `<h2 class="sec">${esc(c)}</h2>` + list.map((i, k) => `
           <div class="adm-item ${i.in_stock ? '' : 'is-out'}" data-id="${i.id}">
-            <div class="adm-thumb">${i.photo_url ? `<img src="${esc(i.photo_url)}" alt="">` : esc((i.name_ml || i.name_en).slice(0, 1))}</div>
-            <div><div class="adm-name">${DM.vegMark(i.is_veg)}${esc(i.name_ml || i.name_en)}</div><div>${esc(i.name_en)}</div></div>
-            <div class="price-cell"><input class="price-in" type="number" inputmode="decimal" min="0" step="1" value="${Number(i.price)}" aria-label="price">
+            <div class="adm-thumb">${i.photo_url ? `<img src="${esc(i.photo_url)}" alt="" loading="lazy">` : esc((i.name_ml || i.name_en).slice(0, 1))}</div>
+            <div><div class="adm-name">${DM.vegMark(i.is_veg)}${esc(i.name_ml || i.name_en)}${i.is_special ? ' <span class="sp-tag">★</span>' : ''}</div><div>${esc(i.name_en)}</div>
+              <div class="adm-tools">
+                <button data-move="-1" ${k === 0 ? 'disabled' : ''} aria-label="up">▲</button>
+                <button data-move="1" ${k === list.length - 1 ? 'disabled' : ''} aria-label="down">▼</button>
+                <button data-special>${i.is_special ? '★' : '☆'}</button></div></div>
+            <div class="price-cell"><input class="price-in" type="number" inputmode="decimal" min="0" step="0.5" value="${Number(i.price)}" aria-label="price">
               <button class="link-btn" data-edit>✎ ${t('edit')}</button></div>
             <div class="sw-cell"><label class="switch"><input type="checkbox" data-stock ${i.in_stock ? 'checked' : ''}><span></span></label>
               ${i.in_stock ? t('inStock') : t('out')}</div>
-          </div>`).join('')).join('');
+          </div>`).join('');
+        }).join('');
     }
 
-    function openForm(item) {
-      editing = item ? { ...item } : { name_en: '', name_ml: '', category: items[0] ? items[0].category : 'Main', price: '', is_veg: true, photo_url: null, sort: 0 };
-      const cats = [...new Set(items.map((i) => i.category))];
+    function openItemForm(item) {
+      editing = item
+        ? { ...item, _photos: [item.photo_url, ...(item.photos || [])].filter(Boolean).map((u) => ({ url: u })) }
+        : { name_en: '', name_ml: '', category: cats()[0] || 'Main', price: '', is_veg: true, description: '', is_special: false, _photos: [] };
       const e = editing;
       $('modal').innerHTML = `<div class="backdrop" data-close></div>
-        <form class="sheet" id="item-form">
+        <form class="sheet" id="item-form" novalidate>
           <div class="sheet-h"><h3>${item ? t('editItem') : t('addItem')}</h3><button type="button" class="x" data-close>✕</button></div>
           <div class="form-grid">
-            <label>${t('nameMl')}<input name="name_ml" value="${esc(e.name_ml)}" maxlength="80"></label>
+            <div><div class="muted" style="font-size:14px;margin-bottom:6px">${t('photo')} (max 5)</div><div class="photo-strip" id="pstrip"></div></div>
+            <label>${t('nameMl')}<input name="name_ml" value="${esc(e.name_ml || '')}" maxlength="80"></label>
             <label>${t('nameEn')} *<input name="name_en" value="${esc(e.name_en)}" maxlength="80" required></label>
             <div class="two">
               <label>${t('price')} *<input name="price" type="number" inputmode="decimal" min="0" step="0.5" value="${e.price}" required></label>
               <label>${t('category')}<input name="category" list="cats" value="${esc(e.category)}" maxlength="40" required>
-                <datalist id="cats">${cats.map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
+                <datalist id="cats">${cats().map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
             </div>
-            <div><div class="muted" style="font-size:14px;margin-bottom:4px">${t('type')}</div>
-              <div class="seg"><label><input type="radio" name="veg" value="1" ${e.is_veg ? 'checked' : ''}>${DM.vegMark(true)} ${t('veg')}</label>
-                <label><input type="radio" name="veg" value="0" ${!e.is_veg ? 'checked' : ''}>${DM.vegMark(false)} ${t('nonveg')}</label></div></div>
-            <label>${t('photo')}<input type="file" accept="image/*" id="photo-in"></label>
-            <div id="photo-box">${e.photo_url ? `<img class="photo-prev" src="${esc(e.photo_url)}"><button type="button" class="link-btn" data-rmphoto>${t('removePhoto')}</button>` : ''}</div>
-            <label>${t('sortOrder')}<input name="sort" type="number" value="${e.sort || 0}"></label>
+            <div class="seg"><label><input type="radio" name="veg" value="1" ${e.is_veg ? 'checked' : ''}>${DM.vegMark(true)} ${t('veg')}</label>
+              <label><input type="radio" name="veg" value="0" ${!e.is_veg ? 'checked' : ''}>${DM.vegMark(false)} ${t('nonveg')}</label></div>
+            <label>${t('description')}<textarea name="description" rows="2" maxlength="300">${esc(e.description || '')}</textarea></label>
+            <label class="check"><input type="checkbox" name="special" ${e.is_special ? 'checked' : ''}> ★ ${t('special')}</label>
             <button class="btn primary big block" type="submit">${t('save')}</button>
             ${item ? `<button type="button" class="btn danger block" data-del>${t('del')}</button>` : ''}
           </div>
         </form>`;
       document.body.classList.add('noscroll');
-      $('photo-in').onchange = async (ev) => {
-        const f = ev.target.files[0]; if (!f) return;
-        try {
-          const blob = await shrink(f, DMStore.mode === 'demo' ? 360 : 720);
-          editing._blob = blob;
-          $('photo-box').innerHTML = `<img class="photo-prev" src="${URL.createObjectURL(blob)}">`;
-        } catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
-      };
-      $('item-form').onsubmit = async (ev) => {
-        ev.preventDefault();
-        const f = ev.target; const btn = f.querySelector('[type=submit]'); btn.disabled = true;
-        try {
-          let photo_url = editing.photo_url;
-          if (editing._blob) photo_url = await DMStore.uploadPhoto(r.id, editing._blob);
-          const row = {
-            name_en: f.name_en.value.trim(), name_ml: f.name_ml.value.trim() || null,
-            price: Number(f.price.value), category: f.category.value.trim() || 'Main',
-            is_veg: f.veg.value === '1', photo_url, sort: Number(f.sort.value) || 0,
-          };
-          if (editing.id) row.id = editing.id;
-          await DMStore.saveItem(r.id, row);
-          closeForm(); DM.toast(t('saved'), 'good'); await loadItems();
-        } catch (err) { btn.disabled = false; DM.toast(DM.errMsg(err), 'bad'); }
-      };
+      drawPhotos();
+      $('item-form').onsubmit = saveItemForm;
     }
-    function closeForm() { editing = null; $('modal').innerHTML = ''; document.body.classList.remove('noscroll'); }
-
-    // resize a phone photo (often 4–8 MB) to a small JPEG before upload
-    function shrink(file, max) {
-      return new Promise((res, rej) => {
-        const img = new Image();
-        img.onload = () => {
-          const s = Math.min(1, max / Math.max(img.width, img.height));
-          const c = document.createElement('canvas');
-          c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
-          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-          c.toBlob((b) => (b ? res(b) : rej(new Error('photo error'))), 'image/jpeg', 0.8);
-          URL.revokeObjectURL(img.src);
+    function drawPhotos() {
+      const ps = editing._photos;
+      $('pstrip').innerHTML = ps.map((p, k) => `<div class="pi">${k === 0 ? `<span class="main-tag">${t('makeMain')}</span>` : ''}
+          <img src="${esc(p.url || p.preview)}" alt=""><div class="acts">
+          ${k > 0 ? `<button type="button" data-ph-main="${k}">★</button>` : '<span></span>'}<button type="button" data-ph-del="${k}">✕</button></div></div>`).join('') +
+        (ps.length < 5 ? `<button type="button" class="add-ph" data-ph-add aria-label="add photo">＋</button>` : '');
+    }
+    async function saveItemForm(ev) {
+      ev.preventDefault();
+      if (busy) return;
+      const f = ev.target;
+      const name_en = f.name_en.value.trim(), price = Number(f.price.value);
+      if (!name_en) { f.name_en.focus(); DM.toast(t('nameEn') + ' *', 'bad'); return; }
+      if (f.price.value === '' || !(price >= 0)) { f.price.focus(); DM.toast(t('price') + ' *', 'bad'); return; }
+      const btn = f.querySelector('[type=submit]'); btn.disabled = true; busy = true;
+      try {
+        const urls = [];
+        for (const p of editing._photos) urls.push(p.url || await DMStore.uploadPhoto(r.id, p.blob));
+        const row = {
+          name_en, name_ml: f.name_ml.value.trim() || null, price,
+          category: f.category.value.trim() || 'Main', is_veg: f.veg.value === '1',
+          description: f.description.value.trim() || null, is_special: f.special.checked,
+          photo_url: urls[0] || null, photos: urls.slice(1),
         };
-        img.onerror = () => rej(new Error('Could not read photo'));
-        img.src = URL.createObjectURL(file);
-      });
+        if (editing.id) row.id = editing.id;
+        else row.sort = items.filter((i) => i.category === row.category).length + 1;
+        await DMStore.saveItem(r.id, row);
+        closeModal(); DM.toast(t('saved'), 'good'); await loadItems();
+      } catch (err) { DM.toast(DM.errMsg(err), 'bad'); btn.disabled = false; }
+      busy = false;
+    }
+    async function moveItem(id, dir) {
+      const it = items.find((i) => i.id === id);
+      const list = items.filter((i) => i.category === it.category);
+      const k = list.indexOf(it), j = k + dir;
+      if (j < 0 || j >= list.length) return;
+      [list[k], list[j]] = [list[j], list[k]];
+      list.forEach((x, n) => { x.sort = n + 1; });
+      items.sort((a, b) => a.category.localeCompare(b.category) || a.sort - b.sort);
+      renderMenu();
+      try { await DMStore.reorderItems(r.id, list.map((x) => x.id)); } catch (err) { DM.toast(DM.errMsg(err), 'bad'); loadItems(); }
     }
 
-    // ---------------- Tables & QR ----------------
-    function renderQR() {
+    // =================== STAFF ===================
+    function renderStaff() {
+      const loginUrl = base + 'index.html?r=' + encodeURIComponent(r.slug);
+      $('pane').innerHTML = `<button class="btn primary big block" data-staff-new>${t('addStaff')}</button>
+        <div class="card" style="margin-top:12px"><div class="muted" style="font-size:14px">${t('loginHint')}</div>
+          <a href="${esc(loginUrl)}" style="word-break:break-all">${esc(loginUrl)}</a></div>
+        ${staff.map((s) => `<div class="staff-row ${s.active ? '' : 'off'}" data-uid="${esc(s.user_id)}">
+            <div class="av">${esc((s.display_name || s.username || s.email || '?').slice(0, 1).toUpperCase())}</div>
+            <div class="info"><b>${esc(s.display_name || s.username || s.email)}${s.is_me ? ` <small>(${t('you')})</small>` : ''}</b>
+              <small>${s.username ? '@' + esc(s.username) : esc(s.email || '')}</small></div>
+            <span class="role-tag">${t('r_' + s.role)}</span>${s.active ? '' : ` <span class="status s-cancelled">${t('locked')}</span>`}
+            ${(canManage(s.role) || s.is_me) ? `<button class="btn sm" data-staff-edit>✎</button>` : ''}
+          </div>`).join('')}`;
+    }
+    function staffForm(s) {
+      const roles = ROLES.filter((x) => canManage(x));
+      const self = s && s.is_me;
+      $('modal').innerHTML = `<div class="backdrop" data-close></div>
+        <form class="sheet" id="staff-form" novalidate>
+          <div class="sheet-h"><h3>${s ? t('editStaff') : t('addStaff')}</h3><button type="button" class="x" data-close>✕</button></div>
+          <div class="form-grid">
+            <label>${t('displayName')} *<input name="display_name" value="${esc(s ? s.display_name || '' : '')}" maxlength="40" required></label>
+            ${!s || s.username ? `<label>${t('username')} *<input name="username" value="${esc(s ? s.username : '')}" maxlength="20" autocapitalize="none" spellcheck="false" required></label>` : ''}
+            ${self ? '' : `<div><div class="muted" style="font-size:14px;margin-bottom:6px">${t('role')}</div>
+              <div class="seg">${roles.map((x) => `<label><input type="radio" name="role" value="${x}" ${(s ? s.role : 'waiter') === x ? 'checked' : ''}>${t('r_' + x)}</label>`).join('')}</div></div>`}
+            <label>${s ? t('newPassword') : t('passwordReq')}<input name="password" type="text" autocomplete="new-password" minlength="6" maxlength="72" ${s ? '' : 'required'}></label>
+            <p class="muted" style="margin:0;font-size:13px">${t('pinTip')}</p>
+            <button class="btn primary big block" type="submit">${t('save')}</button>
+            ${s && !self ? `<button type="button" class="btn block" data-staff-lock>${s.active ? '🔒 ' + t('lock') : '🔓 ' + t('unlock')}</button>
+              <button type="button" class="btn danger block" data-staff-del>${t('removeStaff')}</button>` : ''}
+          </div>
+        </form>`;
+      document.body.classList.add('noscroll');
+      $('staff-form').onsubmit = async (ev) => {
+        ev.preventDefault(); if (busy) return;
+        const f = ev.target; const btn = f.querySelector('[type=submit]');
+        const payload = { display_name: f.display_name.value.trim() };
+        if (f.username) payload.username = f.username.value.trim().toLowerCase();
+        if (f.role) payload.role = f.role.value;
+        if (f.password.value) payload.password = f.password.value;
+        if (!payload.display_name) { DM.toast(t('displayName') + ' *', 'bad'); return; }
+        if (!s && !payload.password) { DM.toast(t('passwordReq'), 'bad'); return; }
+        if (payload.password && payload.password.length < 6) { DM.toast(t('passwordReq'), 'bad'); return; }
+        busy = true; btn.disabled = true;
+        try {
+          if (s) await DMStore.staffAction(r.id, 'update', { user_id: s.user_id, ...payload });
+          else await DMStore.staffAction(r.id, 'create', payload);
+          closeModal(); DM.toast(t('saved'), 'good'); await loadStaff();
+        } catch (err) { DM.toast(DM.errMsg(err), 'bad'); btn.disabled = false; }
+        busy = false;
+      };
+      editing = s;
+    }
+
+    // =================== LOOK (branding) ===================
+    function renderLook() {
+      const cp = r.category_photos || {};
+      $('pane').innerHTML = `
+        <div class="card brand-prev"><div class="cust-head ${r.banner_url ? 'has-banner' : ''}" style="${r.banner_url ? `background-image:url('${esc(r.banner_url)}');` : ''}border-radius:12px">
+          <div class="brand">${r.logo_url ? `<img class="c-logo" src="${esc(r.logo_url)}" alt="">` : ''}<div><h1>${esc(r.name_ml || r.name)}</h1><div class="sub">${esc(r.name)}</div></div></div>
+          <span class="table-pill">${t('table')} 1</span></div></div>
+        <div class="card form-grid">
+          <div class="img-slot"><div class="im sq" style="${r.logo_url ? `background-image:url('${esc(r.logo_url)}')` : ''}"></div>
+            <div><b>${t('logo')}</b><br><button class="btn sm" data-brand="logo_url">${t('choose')}</button>
+            ${r.logo_url ? `<button class="btn sm danger" data-brand-del="logo_url">${t('removePhoto')}</button>` : ''}</div></div>
+          <div class="img-slot"><div class="im" style="${r.banner_url ? `background-image:url('${esc(r.banner_url)}')` : ''}"></div>
+            <div><b>${t('banner')}</b><br><button class="btn sm" data-brand="banner_url">${t('choose')}</button>
+            ${r.banner_url ? `<button class="btn sm danger" data-brand-del="banner_url">${t('removePhoto')}</button>` : ''}</div></div>
+          <div><b>${t('themeColor')}</b><div class="color-row" style="margin-top:6px">
+            ${COLORS.map((c) => `<button style="background:${c}" class="${(r.theme_color || '').toLowerCase() === c ? 'on' : ''}" data-color="${c}" aria-label="${c}"></button>`).join('')}
+            <input type="color" id="color-in" value="${esc(r.theme_color || '#1f7a4d')}"></div></div>
+        </div>
+        <div class="card"><h3>${t('catPhotos')}</h3>
+          ${cats().map((c) => `<div class="img-slot" style="margin-bottom:10px"><div class="im sq" style="${cp[c] ? `background-image:url('${esc(cp[c])}')` : ''}"></div>
+            <div><b>${esc(c)}</b><br><button class="btn sm" data-catph="${esc(c)}">${t('choose')}</button>
+            ${cp[c] ? `<button class="btn sm danger" data-catph-del="${esc(c)}">${t('removePhoto')}</button>` : ''}</div></div>`).join('')}
+        </div>`;
+      $('color-in').onchange = (e) => saveRestaurant({ theme_color: e.target.value });
+    }
+    async function saveRestaurant(patch) {
+      if (busy) return; busy = true;
+      try { r = await DMStore.updateRestaurant(r.id, patch); DM.applyBrand(r.theme_color); DM.toast(t('saved'), 'good'); render(); }
+      catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+      busy = false;
+    }
+    async function uploadBrand(field, aspect, maxW) {
+      const blob = await DM.pickPhoto({ aspect, maxW }); if (!blob) return null;
+      busy = true;
+      try { return await DMStore.uploadPhoto(r.id, blob); } catch (err) { DM.toast(DM.errMsg(err), 'bad'); return null; } finally { busy = false; }
+    }
+
+    // =================== TABLES ===================
+    function renderTables() {
       $('pane').innerHTML = `<div class="card">
           <form id="tables-form" class="two" style="align-items:end">
             <label>${t('tablesCount')}<input name="n" type="number" min="1" max="200" value="${r.tables_count}" required></label>
             <button class="btn primary" type="submit">${t('save')}</button>
           </form>
-          <p class="muted" style="margin-bottom:0">📱 ${t('tablesInfo')}</p>
-        </div>`;
-      $('tables-form').onsubmit = async (ev) => {
+          <p class="muted" style="margin-bottom:0">📱 ${t('tablesInfo')}</p></div>`;
+      $('tables-form').onsubmit = (ev) => {
         ev.preventDefault();
-        try { r = await DMStore.updateRestaurant(r.id, { tables_count: Number(ev.target.n.value) }); DM.toast(t('saved'), 'good'); renderQR(); }
-        catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+        const n = Number(ev.target.n.value);
+        if (!(n >= 1 && n <= 200)) { DM.toast(t('tablesCount') + ': 1–200', 'bad'); return; }
+        saveRestaurant({ tables_count: n });
       };
     }
 
-    // ---------------- Settings ----------------
+    // =================== ACTIVITY ===================
+    function describe(a) {
+      const d = a.details || {};
+      switch (a.action) {
+        case 'order_cancelled': return `#${d.order_no} · ${t('table')} ${d.table} · ${money(d.total)}`;
+        case 'bill_paid': return `${t('table')} ${d.table} · ${money(d.amount)} · ${d.method === 'upi' ? 'UPI' : t('cash')}`;
+        case 'price_changed': return `${d.item}: ${money(d.from)} → ${money(d.to)}`;
+        case 'item_added': return `${d.item} · ${money(d.price)}`;
+        case 'item_deleted': return d.item;
+        case 'staff_added': return `${d.display_name || d.username || ''} (${t('r_' + d.role)})`;
+        case 'staff_updated': return `${d.who || ''}${d.changes ? ' · ' + d.changes.join(', ') : ''}`;
+        case 'staff_removed': return d.who || '';
+        default: return JSON.stringify(d);
+      }
+    }
+    async function renderActivity() {
+      $('pane').innerHTML = `<div class="card"><p class="muted">…</p></div>`;
+      try {
+        const list = await DMStore.audit(r.id);
+        if (tab !== 'activity') return;
+        $('pane').innerHTML = `<div class="card">${list.map((a) => `<div class="act-row">
+            <div><b>${esc(t('a_' + a.action))}</b>${esc(describe(a))}<br><small class="muted">${esc(a.actor || '')}</small></div>
+            <div class="when">${new Date(a.created_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}</div></div>`).join('')
+          || `<p class="muted">—</p>`}</div>`;
+      } catch (err) { $('pane').innerHTML = `<div class="card err">${esc(DM.errMsg(err))}</div>`; }
+    }
+
+    // =================== SETTINGS ===================
     function renderSettings() {
-      const screens = [['🍳 ' + t('kitchen'), 'kitchen.html'], ['🧾 ' + t('counter'), 'counter.html'],
-        ['🧑‍🍳 ' + t('waiter'), 'waiter.html']];
+      const shots = ['waiter', 'kitchen', 'counter', 'reports'];
       $('pane').innerHTML = `<form class="card form-grid" id="set-form">
           <label>${t('hotelName')}<input name="name" value="${esc(r.name)}" required maxlength="80"></label>
           <label>${t('hotelNameMl')}<input name="name_ml" value="${esc(r.name_ml || '')}" maxlength="80"></label>
@@ -149,53 +284,105 @@
           <button class="btn primary big" type="submit">${t('save')}</button>
         </form>
         <div class="card links-list"><h3>${t('links')}</h3>
-          ${screens.map(([l, p, x]) => `<a href="${esc(link(p, x || ''))}" target="_blank">${l}<br><small class="muted">${esc(link(p, x || ''))}</small></a>`).join('')}
+          ${shots.map((s) => `<a href="${esc(base + DM.link(s, r))}" target="_blank">${DM.SCREEN_ICON[s]} ${esc(DM.screenTitle(s))}<br><small class="muted">${esc(base + DM.link(s, r))}</small></a>`).join('')}
         </div>
-        ${DMStore.mode === 'demo' ? `<div class="card"><button class="btn danger block" id="reset">Reset demo data</button></div>` : ''}`;
-      $('set-form').onsubmit = async (ev) => {
+        ${DMStore.mode === 'demo' ? `<div class="card"><button class="btn block" id="sample">📊 Demo: add 30 days of sample sales</button>
+          <button class="btn danger block" id="reset">Reset demo data</button></div>` : ''}`;
+      $('set-form').onsubmit = (ev) => {
         ev.preventDefault(); const f = ev.target;
-        try {
-          r = await DMStore.updateRestaurant(r.id, { name: f.name.value.trim(), name_ml: f.name_ml.value.trim() || null, upi_id: f.upi_id.value.trim() || null });
-          DM.toast(t('saved'), 'good'); renderTabs();
-        } catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+        if (!f.name.value.trim()) { DM.toast(t('hotelName'), 'bad'); return; }
+        saveRestaurant({ name: f.name.value.trim(), name_ml: f.name_ml.value.trim() || null, upi_id: f.upi_id.value.trim() || null });
       };
-      const rs = $('reset');
-      if (rs) rs.onclick = () => { if (confirm('Reset all demo data?')) { DMStore.reset(); location.reload(); } };
+      if ($('reset')) $('reset').onclick = () => { if (confirm('Reset all demo data?')) { DMStore.reset(); location.reload(); } };
+      if ($('sample')) $('sample').onclick = () => { DMStore._addSampleHistory(); DM.toast(t('saved'), 'good'); };
     }
 
-    function render() {
-      renderTabs();
-      if (tab === 'menu') renderMenu(); else if (tab === 'qr') renderQR(); else renderSettings();
-    }
+    function closeModal() { editing = null; $('modal').innerHTML = ''; document.body.classList.remove('noscroll'); }
     async function loadItems() {
       items = await DMStore.listItems(r.id);
       // don't redraw while the owner is typing a price
       if (tab === 'menu' && !(document.activeElement && document.activeElement.classList.contains('price-in'))) renderMenu();
     }
+    async function loadStaff() {
+      try { staff = await DMStore.listStaff(r.id); } catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+      if (tab === 'staff') renderStaff();
+    }
 
     // ---------------- events ----------------
     document.body.addEventListener('click', async (e) => {
       const tb = e.target.closest('[data-tab]');
-      if (tb) { tab = tb.dataset.tab; render(); return; }
-      if (e.target.closest('[data-new]')) { openForm(null); return; }
-      if (e.target.closest('[data-edit]')) { openForm(items.find((i) => i.id === e.target.closest('[data-id]').dataset.id)); return; }
-      if (e.target.closest('[data-close]')) { closeForm(); return; }
-      if (e.target.closest('[data-rmphoto]')) { editing.photo_url = null; delete editing._blob; $('photo-box').innerHTML = ''; return; }
+      if (tb) { tab = tb.dataset.tab; localStorage.setItem('dm_admin_tab', tab); render(); if (tab === 'staff') loadStaff(); return; }
+      if (e.target.closest('[data-close]')) { closeModal(); return; }
+      // menu
+      if (e.target.closest('[data-new]')) { openItemForm(null); return; }
+      const row = e.target.closest('.adm-item');
+      if (row) {
+        const it = items.find((i) => i.id === row.dataset.id);
+        if (e.target.closest('[data-edit]')) { openItemForm(it); return; }
+        const mv = e.target.closest('[data-move]'); if (mv) { moveItem(it.id, Number(mv.dataset.move)); return; }
+        if (e.target.closest('[data-special]')) {
+          try { await DMStore.saveItem(r.id, { id: it.id, is_special: !it.is_special }); await loadItems(); } catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+          return;
+        }
+      }
+      if (e.target.closest('[data-ph-add]')) {
+        const blob = await DM.pickPhoto({ aspect: 4 / 3, maxW: 1000 });
+        if (blob && editing) { editing._photos.push({ blob, preview: URL.createObjectURL(blob) }); drawPhotos(); }
+        return;
+      }
+      const pd = e.target.closest('[data-ph-del]'); if (pd) { editing._photos.splice(Number(pd.dataset.phDel), 1); drawPhotos(); return; }
+      const pm = e.target.closest('[data-ph-main]'); if (pm) { const k = Number(pm.dataset.phMain); editing._photos.unshift(editing._photos.splice(k, 1)[0]); drawPhotos(); return; }
       if (e.target.closest('[data-del]')) {
         if (!confirm(t('delQ'))) return;
-        try { await DMStore.deleteItem(editing.id); closeForm(); await loadItems(); } catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+        try { await DMStore.deleteItem(editing.id); closeModal(); await loadItems(); } catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+        return;
       }
+      // staff
+      if (e.target.closest('[data-staff-new]')) { staffForm(null); return; }
+      const sr = e.target.closest('[data-staff-edit]');
+      if (sr) { staffForm(staff.find((s) => s.user_id === sr.closest('[data-uid]').dataset.uid)); return; }
+      if (e.target.closest('[data-staff-lock]') && editing) {
+        if (busy) return; busy = true;
+        try { await DMStore.staffAction(r.id, 'update', { user_id: editing.user_id, active: !editing.active }); closeModal(); DM.toast(t('saved'), 'good'); await loadStaff(); }
+        catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+        busy = false; return;
+      }
+      if (e.target.closest('[data-staff-del]') && editing) {
+        if (!confirm(t('removeStaffQ', { n: editing.display_name || editing.username }))) return;
+        if (busy) return; busy = true;
+        try { await DMStore.staffAction(r.id, 'delete', { user_id: editing.user_id }); closeModal(); DM.toast(t('saved'), 'good'); await loadStaff(); }
+        catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+        busy = false; return;
+      }
+      // look
+      const bf = e.target.closest('[data-brand]');
+      if (bf) {
+        const f = bf.dataset.brand;
+        const url = await uploadBrand(f, f === 'logo_url' ? 1 : 3, f === 'logo_url' ? 400 : 1400);
+        if (url) saveRestaurant({ [f]: url });
+        return;
+      }
+      const bd = e.target.closest('[data-brand-del]'); if (bd) { saveRestaurant({ [bd.dataset.brandDel]: null }); return; }
+      const cc = e.target.closest('[data-color]'); if (cc) { saveRestaurant({ theme_color: cc.dataset.color }); return; }
+      const cph = e.target.closest('[data-catph]');
+      if (cph) {
+        const url = await uploadBrand('cat', 1, 300);
+        if (url) saveRestaurant({ category_photos: { ...(r.category_photos || {}), [cph.dataset.catph]: url } });
+        return;
+      }
+      const cpd = e.target.closest('[data-catph-del]');
+      if (cpd) { const m = { ...(r.category_photos || {}) }; delete m[cpd.dataset.catphDel]; saveRestaurant({ category_photos: m }); }
     });
     $('pane').addEventListener('change', async (e) => {
-      const row = e.target.closest('[data-id]'); if (!row) return;
+      const row = e.target.closest('.adm-item'); if (!row) return;
       const id = row.dataset.id;
       try {
         if (e.target.matches('[data-stock]')) {
-          await DMStore.saveItem(r.id, { id, in_stock: e.target.checked });
+          await DMStore.setStock(id, e.target.checked);
           DM.toast(t('saved'), 'good');
         } else if (e.target.matches('.price-in')) {
           const v = Number(e.target.value);
-          if (!(v >= 0) || e.target.value === '') throw new Error('Invalid price');
+          if (e.target.value === '' || !(v >= 0)) throw new Error(t('price') + ' ?');
           await DMStore.saveItem(r.id, { id, price: v });
           DM.toast(t('saved') + ' · ' + money(v), 'good');
           e.target.blur();
@@ -204,10 +391,16 @@
       } catch (err) { DM.toast(DM.errMsg(err), 'bad'); await loadItems(); }
     });
     $('pane').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches('.price-in')) e.target.blur(); });
-    document.addEventListener('dm:lang', () => { render(); if (editing) openForm(editing.id ? editing : null); });
+    // language change: redraw the page but never an open form (keeps what was typed)
+    document.addEventListener('dm:lang', () => { renderTabs(); if (!$('modal').innerHTML) render(); });
 
+    let itemTimer = null;
+    const loadItemsSoon = () => { clearTimeout(itemTimer); itemTimer = setTimeout(() => { if (!busy) loadItems().catch(() => {}); }, 300); };
+    if (DMStore.mode === 'live') DMStore.subscribe(r.id, { orders: false, items: true }, loadItemsSoon, null);
+    else DMStore.onChange(loadItemsSoon);
     render();
-    DM.live(r.id, { orders: false, items: true }, loadItems, 60000);
+    await loadItems();
+    if (tab === 'staff') loadStaff();
   })();
   </script>
 </body>

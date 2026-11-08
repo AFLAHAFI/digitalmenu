@@ -2,6 +2,7 @@
   "name": "Digital Menu",
   "short_name": "Menu",
   "start_url": "./index.html",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#faf7f0",
   "theme_color": "#1f7a4d",
