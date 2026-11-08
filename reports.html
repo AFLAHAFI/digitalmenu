@@ -76,6 +76,8 @@
           ${kpi(t('itemsSold'), d.items_sold)}
           ${kpi(t('prepTime'), d.avg_prep_min != null ? d.avg_prep_min + ' ' + t('min') : '—')}
           ${kpi(t('cancelled'), d.cancelled, d.cancelled ? money(d.cancelled_value) : '')}
+          ${kpi(t('collected'), money(d.collected || 0), [d.discount > 0 ? `${t('discount')}: −${money(d.discount)}` : '', d.gst > 0 ? `GST: ${money(d.gst)}` : ''].filter(Boolean).join(' · '))}
+          ${kpi(t('parcels'), d.parcels || 0)}
         </div>
         <div class="card"><b>${t('cash')} / ${t('upi')}</b><div style="margin-top:8px">${DM.splitBar(Number(d.cash), Number(d.upi), t('cash'), t('upi'), money)}</div></div>
         ${days.length > 1 ? `<div class="card"><h3>${t('salesByDay')}</h3><div class="chart-scroll">${DM.columnChart(days.map((k) => {
@@ -110,12 +112,13 @@
     async function downloadCsv() {
       try {
         const rows = await DMStore.reportOrders(r.id, from.toISOString(), to.toISOString());
-        const head = ['Order no', 'Date', 'Time', 'Table', 'Status', 'Source', 'Staff', 'Items', 'Total', 'Payment', 'Paid at'];
+        const head = ['Order no', 'Date', 'Time', 'Type', 'Table', 'Customer', 'Status', 'Source', 'Staff', 'Items', 'Total', 'Bill no', 'Payment', 'Paid at'];
         const q = (v) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
         const lines = [head.join(',')].concat(rows.map((o) => {
           const c = new Date(o.created_at);
-          return [o.order_no, ymd(c), c.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), o.table_no, o.status, o.source,
-            o.staff || '', o.items, o.total, o.pay_method || '', o.paid_at ? new Date(o.paid_at).toLocaleString('en-IN') : ''].map(q).join(',');
+          return [o.order_no, ymd(c), c.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), o.type === 'parcel' ? 'Parcel' : 'Dine-in',
+            o.type === 'parcel' ? '' : o.table_no, o.customer || '', o.status, o.source,
+            o.staff || '', o.items, o.total, o.bill_no || '', o.pay_method || '', o.paid_at ? new Date(o.paid_at).toLocaleString('en-IN') : ''].map(q).join(',');
         }));
         const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });   // BOM so Excel reads Malayalam
         const a = document.createElement('a');

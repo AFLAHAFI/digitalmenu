@@ -21,6 +21,8 @@
   <script src="js/store.js"></script>
   <script src="js/common.js"></script>
   <script src="js/feed.js"></script>
+  <script src="js/vendor/qrcode.js"></script>
+  <script src="js/print.js"></script>
   <script>
   (async function () {
     const { t, esc } = DM;
@@ -31,6 +33,8 @@
     let orders = [], items = [], stockOpen = false;
     let seen = null;               // ids of 'new' orders already beeped for
     let soundOn = localStorage.getItem('dm_k_sound') !== 'off';
+    let autoKot = localStorage.getItem('dm_auto_kot') === 'on';
+    const kotQueue = [];
     const $top = document.getElementById('top');
     const $grid = document.getElementById('grid');
     const $stock = document.getElementById('stock');
@@ -64,6 +68,7 @@
         <div class="k-stats" id="kstats"></div>
         <span class="k-clock" id="kclock"></span>
         <button class="icon-btn" id="stock-btn" title="${esc(t('stockPanel'))}">📦</button>
+        <button class="icon-btn" id="kot-btn" title="${esc(t('autoKot'))}">🖨<small id="kot-st"></small></button>
         <button class="icon-btn" id="snd" title="sound">${soundOn ? '🔔' : '🔕'}</button>`);
       renderTop();
     }
@@ -74,6 +79,7 @@
       ks.innerHTML = `<span class="k-stat s-new">${t('newOrders')} ${c('new')}</span><span class="k-stat s-preparing">${t('preparing')} ${c('preparing')}</span>`;
       kc.textContent = new Date().toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
       sn.textContent = soundOn ? '🔔' : '🔕';
+      document.getElementById('kot-st').textContent = autoKot ? ' ON' : '';
     }
 
     function card(o) {
@@ -83,15 +89,20 @@
         : o.status === 'preparing'
           ? `<button class="btn primary" data-act="ready">${t('markReady')}</button>`
           : `<button class="btn" data-act="served">${t('markServed')}</button>`;
+      const where = o.order_type === 'parcel'
+        ? `<div class="k-parcel">📦 ${t('parcel')}${o.customer_name ? `<div style="font-size:16px">${esc(o.customer_name)}</div>` : ''}</div>`
+        : `<div class="k-table"><small>${t('table')}</small>${o.table_no}</div>`;
       return `<div class="k-card st-${o.status}" data-id="${o.id}">
         <div class="k-head">
-          <div class="k-table"><small>${t('table')}</small>${o.table_no}</div>
-          <div class="k-meta">#${o.order_no}${o.source === 'waiter' ? ' · 🧑‍🍳' : ' · 📱'}<br>
+          ${where}
+          <div class="k-meta">#${o.order_no}${o.source === 'waiter' ? ' · 🧑‍🍳' : ' · 📱'} <button class="icon-btn" data-kot title="KOT">🖨</button><br>
             <span class="${m >= 15 && o.status !== 'ready' ? 'late' : ''}">${DM.ago(o.created_at)}</span><br>
             <span class="status s-${o.status}">${t('st_' + o.status)}</span></div>
         </div>
-        <ul class="k-items">${o.items.map((i) => `<li><span class="k-qty">${i.qty}×</span>
-          <span>${esc(i.name_ml || i.name_en)}${i.name_ml ? `<span class="en">${esc(i.name_en)}</span>` : ''}</span></li>`).join('')}</ul>
+        <ul class="k-items">${o.items.filter((i) => i.id !== 'parcel').map((i) => {
+          const opt = [i.variant_ml || i.variant_en, ...(i.addons || []).map((a) => '+ ' + (a.name_ml || a.name_en))].filter(Boolean).join(' ');
+          return `<li><span class="k-qty">${i.qty}×</span>
+          <span>${esc(i.name_ml || i.name_en)}${opt ? `<span class="opt-l">${esc(opt)}</span>` : ''}${i.name_ml ? `<span class="en">${esc(i.name_en)}</span>` : ''}</span></li>`; }).join('')}</ul>
         ${o.note ? `<div class="k-note">📝 ${esc(o.note)}</div>` : ''}
         <div class="k-act">${btns}</div>
       </div>`;
@@ -106,10 +117,11 @@
     // ---- stock panel: kitchen marks dishes finished / available ----
     function renderStock() {
       if (!stockOpen) { $stock.innerHTML = ''; return; }
-      $stock.innerHTML = `<div class="stock-panel" data-stock-close><div class="sp-in" onclick="event.stopPropagation()">
+      $stock.innerHTML = `<div class="stock-panel" data-stock-bg><div class="sp-in">
           <div class="sheet-h"><h3>📦 ${t('stockPanel')}</h3><button class="x" data-stock-close>✕</button></div>
           ${items.map((i) => `<div class="stock-row ${i.in_stock ? '' : 'off'}">
             <span>${esc(i.name_ml || i.name_en)}</span>
+            <input class="sq" type="number" inputmode="numeric" min="0" placeholder="∞" value="${i.stock_qty ?? ''}" data-sq="${i.id}" aria-label="${esc(t('stockQty'))}">
             <label class="switch"><input type="checkbox" data-stock="${i.id}" ${i.in_stock ? 'checked' : ''}><span></span></label></div>`).join('')}
         </div></div>`;
     }
@@ -124,17 +136,34 @@
         const fresh = newIds.filter((id) => !seen.has(id));
         fresh.forEach((id) => seen.add(id));
         if (fresh.length && soundOn) DM.beep(3);
+        if (fresh.length && autoKot) fresh.forEach((id) => { const o = orders.find((x) => x.id === id); if (o) kotQueue.push(o); });
+        runKotQueue();
         render();
       },
     });
 
+    // print one KOT at a time (each opens the print dialog / printer app)
+    let printing = false;
+    function runKotQueue() {
+      if (printing || !kotQueue.length || ov.isConnected) return;
+      printing = true;
+      DM.printKOT(r, kotQueue.shift());
+      setTimeout(() => { printing = false; runKotQueue(); }, 2500);
+    }
+
     document.body.addEventListener('click', async (e) => {
+      const kb = e.target.closest('[data-kot]');
+      if (kb) { const o = orders.find((x) => x.id === kb.closest('[data-id]').dataset.id); if (o) DM.printKOT(r, o); return; }
+      if (e.target.closest('#kot-btn')) {
+        autoKot = !autoKot; localStorage.setItem('dm_auto_kot', autoKot ? 'on' : 'off');
+        DM.toast(t('autoKot') + ': ' + (autoKot ? 'ON' : 'OFF'), 'good'); renderTop(); return;
+      }
       if (e.target.closest('#snd')) {
         soundOn = !soundOn; localStorage.setItem('dm_k_sound', soundOn ? 'on' : 'off');
         DM.unlockAudio(); if (soundOn) DM.beep(1); renderTop(); return;
       }
       if (e.target.closest('#stock-btn')) { stockOpen = true; renderStock(); loadItems(); return; }
-      if (e.target.closest('[data-stock-close]') && !e.target.closest('.switch')) { stockOpen = false; renderStock(); return; }
+      if (e.target.closest('[data-stock-close]') || e.target.matches('[data-stock-bg]')) { stockOpen = false; renderStock(); return; }
       const b = e.target.closest('[data-act]'); if (!b) return;
       const id = b.closest('[data-id]').dataset.id;
       const status = b.dataset.act;
@@ -146,6 +175,14 @@
       catch (err) { if (before) feed.patch(id, before); DM.toast(DM.errMsg(err), 'bad'); }
     });
     $stock.addEventListener('change', async (e) => {
+      const sq = e.target.closest('[data-sq]');
+      if (sq) {
+        const v = sq.value.trim() === '' ? null : Math.floor(Number(sq.value));
+        if (v !== null && !(v >= 0)) { DM.toast(t('stockQty'), 'bad'); return; }
+        try { await DMStore.setStockQty(sq.dataset.sq, v); await loadItems(); DM.toast(t('saved'), 'good'); }
+        catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+        return;
+      }
       const inp = e.target.closest('[data-stock]'); if (!inp) return;
       const it = items.find((x) => x.id === inp.dataset.stock);
       try { await DMStore.setStock(inp.dataset.stock, inp.checked); if (it) it.in_stock = inp.checked; renderStock(); DM.toast(t('saved'), 'good'); }

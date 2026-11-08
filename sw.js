@@ -2,10 +2,10 @@
 // HTML + config: network first (always fresh, cached copy only when offline).
 // CSS / JS / icons: served from cache, refreshed in the background.
 // Supabase (database) requests are never cached.
-const CACHE = 'dm-v2-1';
+const CACHE = 'dm-v3-1';
 const SHELL = ['./', 'index.html', 'menu.html', 'waiter.html', 'kitchen.html', 'counter.html', 'admin.html', 'reports.html',
   'css/style.css', 'js/config.js', 'js/common.js', 'js/store.js', 'js/feed.js', 'js/outbox.js', 'js/menu-ui.js',
-  'js/cropper.js', 'js/charts.js', 'js/vendor/supabase.js', 'js/vendor/qrcode.js', 'img/icon.svg', 'manifest.json'];
+  'js/cropper.js', 'js/charts.js', 'js/print.js', 'js/vendor/supabase.js', 'js/vendor/qrcode.js', 'img/icon.svg', 'manifest.json'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

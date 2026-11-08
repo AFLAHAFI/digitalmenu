@@ -64,6 +64,20 @@
       // activity
       a_order_cancelled: 'Order cancelled', a_bill_paid: 'Bill paid', a_price_changed: 'Price changed', a_item_added: 'Dish added',
       a_item_deleted: 'Dish deleted', a_staff_added: 'Staff added', a_staff_updated: 'Staff changed', a_staff_removed: 'Staff removed',
+      a_table_moved: 'Table moved',
+      // phase 5
+      chooseSize: 'Choose one', addons: 'Add-ons (optional)', addToOrder: 'Add', fromPrice: 'from', onlyLeft: 'Only {n} left',
+      inOrder: '{n} in order', variants: 'Sizes / options (e.g. Half, Full)', addonsEdit: 'Add-ons (e.g. Extra egg)', addRow: '+ Add',
+      stockQty: 'Stock count (empty = not counted)', parcel: 'Parcel', parcels: 'Parcels', newParcel: '📦 New parcel', custName: 'Customer name',
+      custPhone: 'Phone (for WhatsApp)', parcelFor: 'Parcel', pay: 'Pay', payBill: 'Take payment', subtotal: 'Subtotal', discount: 'Discount',
+      discountNote: 'Reason (optional)', gst: 'GST', roundOff: 'Round off', grandTotal: 'Total', split: 'Split', cashPart: 'Cash part',
+      upiPart: 'UPI part', confirmPay: 'Confirm payment', paidOk: 'Paid ✓', billNo: 'Bill', whatsapp: 'WhatsApp', printBill: 'Print bill',
+      kot: 'KOT', autoKot: 'Auto-print KOT', moveTable: 'Move / merge table', moveTo: 'Move table {t} to', moved: 'Moved to table {t}',
+      selectOrders: 'Tick the orders to pay now', scanUpi: 'Scan to pay with any UPI app', noUpi: 'Add your UPI ID in Owner → Settings to show a QR',
+      gstRate: 'GST %', gstInclusive: 'Prices already include GST', gstin: 'GSTIN', parcelCharge: 'Parcel charge (₹ per order)',
+      billFooter: 'Bill footer text', paperWidth: 'Printer paper (this device)', percent: '%', amountRs: '₹', collected: 'Collected',
+      cgst: 'CGST', sgst: 'SGST', payMismatch: 'Cash + UPI must equal ₹{n}', chooseFirst: 'Please choose an option for {n}',
+      dineIn: 'Dine-in', countLeft: 'left',
     },
     ml: {
       app: 'ഡിജിറ്റൽ മെനു', table: 'ടേബിൾ', all: 'എല്ലാം', search: 'വിഭവം തിരയുക…',
@@ -120,6 +134,19 @@
       stockPanel: 'സ്റ്റോക്ക്', theme: 'തീം',
       a_order_cancelled: 'ഓർഡർ റദ്ദാക്കി', a_bill_paid: 'ബിൽ അടച്ചു', a_price_changed: 'വില മാറ്റി', a_item_added: 'വിഭവം ചേർത്തു',
       a_item_deleted: 'വിഭവം ഡിലീറ്റ് ചെയ്തു', a_staff_added: 'സ്റ്റാഫിനെ ചേർത്തു', a_staff_updated: 'സ്റ്റാഫ് മാറ്റം', a_staff_removed: 'സ്റ്റാഫിനെ നീക്കി',
+      a_table_moved: 'ടേബിൾ മാറ്റി',
+      chooseSize: 'ഒന്ന് തിരഞ്ഞെടുക്കുക', addons: 'കൂടെ ചേർക്കാൻ (വേണമെങ്കിൽ)', addToOrder: 'ചേർക്കുക', fromPrice: 'മുതൽ', onlyLeft: '{n} എണ്ണം മാത്രം ബാക്കി',
+      inOrder: 'ഓർഡറിൽ {n}', variants: 'അളവ് / തരം (ഉദാ: ഹാഫ്, ഫുൾ)', addonsEdit: 'ആഡ്-ഓൺ (ഉദാ: എക്സ്ട്രാ മുട്ട)', addRow: '+ ചേർക്കുക',
+      stockQty: 'സ്റ്റോക്ക് എണ്ണം (ഒഴിച്ചിട്ടാൽ എണ്ണില്ല)', parcel: 'പാഴ്സൽ', parcels: 'പാഴ്സലുകൾ', newParcel: '📦 പുതിയ പാഴ്സൽ', custName: 'കസ്റ്റമറുടെ പേര്',
+      custPhone: 'ഫോൺ (WhatsApp-ന്)', parcelFor: 'പാഴ്സൽ', pay: 'പണം', payBill: 'പണം വാങ്ങുക', subtotal: 'ആകെ (ഭക്ഷണം)', discount: 'ഡിസ്കൗണ്ട്',
+      discountNote: 'കാരണം (വേണമെങ്കിൽ)', gst: 'GST', roundOff: 'റൗണ്ട് ഓഫ്', grandTotal: 'ആകെ', split: 'വിഭജിക്കുക', cashPart: 'ക്യാഷ് ഭാഗം',
+      upiPart: 'UPI ഭാഗം', confirmPay: 'പണം കിട്ടി — ഉറപ്പാക്കുക', paidOk: 'അടച്ചു ✓', billNo: 'ബിൽ', whatsapp: 'WhatsApp', printBill: 'ബിൽ പ്രിന്റ്',
+      kot: 'KOT', autoKot: 'KOT തനിയെ പ്രിന്റ്', moveTable: 'ടേബിൾ മാറ്റുക / ചേർക്കുക', moveTo: 'ടേബിൾ {t} മാറ്റേണ്ടത്', moved: 'ടേബിൾ {t}-ലേക്ക് മാറ്റി',
+      selectOrders: 'ഇപ്പോൾ അടയ്ക്കുന്ന ഓർഡറുകൾ ടിക്ക് ചെയ്യുക', scanUpi: 'ഏത് UPI ആപ്പ് കൊണ്ടും സ്കാൻ ചെയ്ത് അടയ്ക്കാം', noUpi: 'QR കാണിക്കാൻ ഉടമ → സെറ്റിംഗ്സിൽ UPI ID ചേർക്കുക',
+      gstRate: 'GST %', gstInclusive: 'വിലയിൽ GST ഉൾപ്പെടെ', gstin: 'GSTIN', parcelCharge: 'പാഴ്സൽ ചാർജ് (ഓരോ ഓർഡറിനും ₹)',
+      billFooter: 'ബില്ലിന്റെ താഴെ എഴുത്ത്', paperWidth: 'പ്രിന്റർ പേപ്പർ (ഈ ഉപകരണം)', percent: '%', amountRs: '₹', collected: 'കിട്ടിയ തുക',
+      cgst: 'CGST', sgst: 'SGST', payMismatch: 'ക്യാഷ് + UPI = ₹{n} ആകണം', chooseFirst: '{n}-ന് ഒരു തരം തിരഞ്ഞെടുക്കുക',
+      dineIn: 'ടേബിൾ', countLeft: 'ബാക്കി',
     },
   };
   let lang = localStorage.getItem('dm_lang') || C.DEFAULT_LANG || 'ml';
@@ -179,6 +206,16 @@
   const slug = () => (param('r') || localStorage.getItem('dm_last_slug') || C.DEFAULT_RESTAURANT || 'demo-hotel').toLowerCase();
   const itemName = (it) => (lang === 'ml' ? (it.name_ml || it.name_en) : it.name_en);
   const itemSub = (it) => (lang === 'ml' ? (it.name_ml ? it.name_en : '') : (it.name_ml || ''));
+  // order line -> "Biryani (Full) + Extra egg"
+  function lineName(i, forceEn) {
+    const ml = !forceEn && lang === 'ml';
+    let s = ml ? (i.name_ml || i.name_en) : i.name_en;
+    const v = ml ? (i.variant_ml || i.variant_en) : i.variant_en;
+    if (v) s += ' (' + v + ')';
+    if (i.addons && i.addons.length) s += ' + ' + i.addons.map((a) => (ml ? (a.name_ml || a.name_en) : a.name_en)).join(', ');
+    return s;
+  }
+  const lineKey = (i) => [i.id, i.price, i.variant_en || '', (i.addons || []).map((a) => a.name_en).join('+')].join('|');
   const vegMark = (isVeg) => `<span class="vegmark ${isVeg ? 'veg' : 'nonveg'}" title="${isVeg ? t('veg') : t('nonveg')}"><i></i></span>`;
   const minutesAgo = (iso) => Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
   const ago = (iso) => { const m = minutesAgo(iso); return m < 1 ? t('justNow') : m + ' ' + t('min'); };
@@ -202,6 +239,8 @@
   function errMsg(e) {
     const m = (e && (e.message || e.error_description || e.error)) || String(e || '');
     if (m.startsWith('OUT_OF_STOCK:')) return m.slice(13) + ' — ' + t('out');
+    if (m.startsWith('CHOOSE_OPTION:')) return t('chooseFirst', { n: m.slice(14) });
+    if (m.startsWith('PAY_MISMATCH:')) return t('payMismatch', { n: m.slice(13) });
     if (/invalid login credentials/i.test(m)) return t('badLogin');
     if (isNetErr(e)) return t('offline');
     return m || t('error');
@@ -397,7 +436,7 @@
 
   window.DM = {
     t, setLang, get lang() { return lang; }, langToggleHTML, esc, money, param, slug, itemName, itemSub,
-    vegMark, minutesAgo, ago, clock, startOfToday, uuid, isNetErr, toast, errMsg, unlockAudio, beep, keepAwake,
+    vegMark, lineName, lineKey, minutesAgo, ago, clock, startOfToday, uuid, isNetErr, toast, errMsg, unlockAudio, beep, keepAwake,
     setConn, demoBanner, requireStaff, staffHeader, staffEmail, applyBrand, applyTheme, themeIcon,
     SCREENS, screensFor, homeFor, screenTitle, SCREEN_ICON, link, signOut,
   };

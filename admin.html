@@ -55,7 +55,9 @@
           return `<h2 class="sec">${esc(c)}</h2>` + list.map((i, k) => `
           <div class="adm-item ${i.in_stock ? '' : 'is-out'}" data-id="${i.id}">
             <div class="adm-thumb">${i.photo_url ? `<img src="${esc(i.photo_url)}" alt="" loading="lazy">` : esc((i.name_ml || i.name_en).slice(0, 1))}</div>
-            <div><div class="adm-name">${DM.vegMark(i.is_veg)}${esc(i.name_ml || i.name_en)}${i.is_special ? ' <span class="sp-tag">★</span>' : ''}</div><div>${esc(i.name_en)}</div>
+            <div><div class="adm-name">${DM.vegMark(i.is_veg)}${esc(i.name_ml || i.name_en)}${i.is_special ? ' <span class="sp-tag">★</span>' : ''}
+                ${i.stock_qty !== null && i.stock_qty !== undefined ? `<span class="stock-badge">${i.stock_qty} ${t('countLeft')}</span>` : ''}</div>
+              <div>${esc(i.name_en)}${(i.variants || []).length ? ' · ' + i.variants.map((v) => esc(v.name_en) + ' ' + money(v.price)).join(' / ') : ''}${(i.addons || []).length ? ' · +' + i.addons.length : ''}</div>
               <div class="adm-tools">
                 <button data-move="-1" ${k === 0 ? 'disabled' : ''} aria-label="up">▲</button>
                 <button data-move="1" ${k === list.length - 1 ? 'disabled' : ''} aria-label="down">▼</button>
@@ -71,7 +73,9 @@
     function openItemForm(item) {
       editing = item
         ? { ...item, _photos: [item.photo_url, ...(item.photos || [])].filter(Boolean).map((u) => ({ url: u })) }
-        : { name_en: '', name_ml: '', category: cats()[0] || 'Main', price: '', is_veg: true, description: '', is_special: false, _photos: [] };
+        : { name_en: '', name_ml: '', category: cats()[0] || 'Main', price: '', is_veg: true, description: '', is_special: false, _photos: [], variants: [], addons: [], stock_qty: null };
+      editing._variants = (editing.variants || []).map((x) => ({ ...x }));
+      editing._addons = (editing.addons || []).map((x) => ({ ...x }));
       const e = editing;
       $('modal').innerHTML = `<div class="backdrop" data-close></div>
         <form class="sheet" id="item-form" novalidate>
@@ -89,12 +93,17 @@
               <label><input type="radio" name="veg" value="0" ${!e.is_veg ? 'checked' : ''}>${DM.vegMark(false)} ${t('nonveg')}</label></div>
             <label>${t('description')}<textarea name="description" rows="2" maxlength="300">${esc(e.description || '')}</textarea></label>
             <label class="check"><input type="checkbox" name="special" ${e.is_special ? 'checked' : ''}> ★ ${t('special')}</label>
+            <div class="opt-editor"><div class="muted" style="font-size:14px;margin-bottom:6px">${t('variants')}</div><div id="oe-v"></div>
+              <button type="button" class="btn sm" data-oe-add="v">${t('addRow')}</button></div>
+            <div class="opt-editor"><div class="muted" style="font-size:14px;margin-bottom:6px">${t('addonsEdit')}</div><div id="oe-a"></div>
+              <button type="button" class="btn sm" data-oe-add="a">${t('addRow')}</button></div>
+            <label>${t('stockQty')}<input name="stock_qty" type="number" inputmode="numeric" min="0" step="1" value="${e.stock_qty ?? ''}" placeholder="∞"></label>
             <button class="btn primary big block" type="submit">${t('save')}</button>
             ${item ? `<button type="button" class="btn danger block" data-del>${t('del')}</button>` : ''}
           </div>
         </form>`;
       document.body.classList.add('noscroll');
-      drawPhotos();
+      drawPhotos(); drawOpts('v'); drawOpts('a');
       $('item-form').onsubmit = saveItemForm;
     }
     function drawPhotos() {
@@ -104,6 +113,25 @@
           ${k > 0 ? `<button type="button" data-ph-main="${k}">★</button>` : '<span></span>'}<button type="button" data-ph-del="${k}">✕</button></div></div>`).join('') +
         (ps.length < 5 ? `<button type="button" class="add-ph" data-ph-add aria-label="add photo">＋</button>` : '');
     }
+    // sizes (variants) and add-ons editor rows: Malayalam name, English name, price
+    function drawOpts(kind) {
+      const list = kind === 'v' ? editing._variants : editing._addons;
+      $('oe-' + kind).innerHTML = list.map((o, k) => `<div class="oe-row" data-oe="${kind}" data-k="${k}">
+          <input data-f="name_ml" placeholder="${esc(t('nameMl'))}" value="${esc(o.name_ml || '')}" maxlength="40">
+          <input data-f="name_en" placeholder="${esc(t('nameEn'))}" value="${esc(o.name_en || '')}" maxlength="40">
+          <input data-f="price" type="number" inputmode="decimal" min="0" step="0.5" placeholder="₹" value="${o.price ?? ''}">
+          <button type="button" class="oe-del" data-oe-del aria-label="remove">✕</button></div>`).join('');
+    }
+    function readOpts(list, label) {
+      const out = [];
+      for (const o of list) {
+        const en = String(o.name_en || '').trim(), ml = String(o.name_ml || '').trim(), pr = Number(o.price);
+        if (!en && !ml && (o.price === '' || o.price === undefined)) continue;            // empty row
+        if (!en || o.price === '' || o.price === undefined || !(pr >= 0)) throw new Error(label + ': ' + t('nameEn') + ' + ' + t('price'));
+        out.push({ name_en: en, name_ml: ml || null, price: pr });
+      }
+      return out;
+    }
     async function saveItemForm(ev) {
       ev.preventDefault();
       if (busy) return;
@@ -111,6 +139,13 @@
       const name_en = f.name_en.value.trim(), price = Number(f.price.value);
       if (!name_en) { f.name_en.focus(); DM.toast(t('nameEn') + ' *', 'bad'); return; }
       if (f.price.value === '' || !(price >= 0)) { f.price.focus(); DM.toast(t('price') + ' *', 'bad'); return; }
+      let variants, addons, stock_qty;
+      try {
+        variants = readOpts(editing._variants, t('variants')); addons = readOpts(editing._addons, t('addonsEdit'));
+        if (variants.length > 8 || addons.length > 12) throw new Error('Max 8 sizes / 12 add-ons');
+        stock_qty = f.stock_qty.value.trim() === '' ? null : Math.floor(Number(f.stock_qty.value));
+        if (stock_qty !== null && !(stock_qty >= 0)) throw new Error(t('stockQty'));
+      } catch (err) { DM.toast(err.message, 'bad'); return; }
       const btn = f.querySelector('[type=submit]'); btn.disabled = true; busy = true;
       try {
         const urls = [];
@@ -119,8 +154,9 @@
           name_en, name_ml: f.name_ml.value.trim() || null, price,
           category: f.category.value.trim() || 'Main', is_veg: f.veg.value === '1',
           description: f.description.value.trim() || null, is_special: f.special.checked,
-          photo_url: urls[0] || null, photos: urls.slice(1),
+          photo_url: urls[0] || null, photos: urls.slice(1), variants, addons, stock_qty,
         };
+        if (stock_qty !== null) row.in_stock = stock_qty > 0;
         if (editing.id) row.id = editing.id;
         else row.sort = items.filter((i) => i.category === row.category).length + 1;
         await DMStore.saveItem(r.id, row);
@@ -252,7 +288,8 @@
       const d = a.details || {};
       switch (a.action) {
         case 'order_cancelled': return `#${d.order_no} · ${t('table')} ${d.table} · ${money(d.total)}`;
-        case 'bill_paid': return `${t('table')} ${d.table} · ${money(d.amount)} · ${d.method === 'upi' ? 'UPI' : t('cash')}`;
+        case 'bill_paid': return `${d.bill_no ? '#' + d.bill_no + ' · ' : ''}${d.table === 0 ? t('parcel') : t('table') + ' ' + d.table} · ${money(d.amount)} · ${d.method === 'upi' ? 'UPI' : d.method === 'mixed' ? t('cash') + '+UPI' : t('cash')}${d.discount > 0 ? ' · ' + t('discount') + ' ' + money(d.discount) : ''}`;
+        case 'table_moved': return `${t('table')} ${d.from} → ${d.to} (${d.orders})`;
         case 'price_changed': return `${d.item}: ${money(d.from)} → ${money(d.to)}`;
         case 'item_added': return `${d.item} · ${money(d.price)}`;
         case 'item_deleted': return d.item;
@@ -281,8 +318,18 @@
           <label>${t('hotelName')}<input name="name" value="${esc(r.name)}" required maxlength="80"></label>
           <label>${t('hotelNameMl')}<input name="name_ml" value="${esc(r.name_ml || '')}" maxlength="80"></label>
           <label>${t('upiId')}<input name="upi_id" value="${esc(r.upi_id || '')}" placeholder="name@okbank" maxlength="80"></label>
+          <div class="two">
+            <label>${t('gstRate')}<input name="gst_rate" type="number" inputmode="decimal" min="0" max="28" step="0.5" value="${Number(r.gst_rate || 0)}"></label>
+            <label>${t('parcelCharge')}<input name="parcel_charge" type="number" inputmode="decimal" min="0" max="1000" step="1" value="${Number(r.parcel_charge || 0)}"></label>
+          </div>
+          <label class="check"><input type="checkbox" name="gst_inclusive" ${r.gst_inclusive ? 'checked' : ''}> ${t('gstInclusive')}</label>
+          <label>${t('gstin')}<input name="gstin" value="${esc(r.gstin || '')}" maxlength="15" autocapitalize="characters"></label>
+          <label>${t('billFooter')}<input name="bill_footer" value="${esc(r.bill_footer || '')}" maxlength="200" placeholder="${esc(t('thanks'))}"></label>
           <button class="btn primary big" type="submit">${t('save')}</button>
         </form>
+        <div class="card"><b>${t('paperWidth')}</b><div class="seg" style="margin-top:8px">
+          <label><input type="radio" name="paper" value="80" ${localStorage.getItem('dm_paper') !== '58' ? 'checked' : ''}>80 mm</label>
+          <label><input type="radio" name="paper" value="58" ${localStorage.getItem('dm_paper') === '58' ? 'checked' : ''}>58 mm</label></div></div>
         <div class="card links-list"><h3>${t('links')}</h3>
           ${shots.map((s) => `<a href="${esc(base + DM.link(s, r))}" target="_blank">${DM.SCREEN_ICON[s]} ${esc(DM.screenTitle(s))}<br><small class="muted">${esc(base + DM.link(s, r))}</small></a>`).join('')}
         </div>
@@ -291,9 +338,15 @@
       $('set-form').onsubmit = (ev) => {
         ev.preventDefault(); const f = ev.target;
         if (!f.name.value.trim()) { DM.toast(t('hotelName'), 'bad'); return; }
-        saveRestaurant({ name: f.name.value.trim(), name_ml: f.name_ml.value.trim() || null, upi_id: f.upi_id.value.trim() || null });
+        const gst = Number(f.gst_rate.value), pc = Number(f.parcel_charge.value);
+        if (!(gst >= 0 && gst <= 28)) { DM.toast(t('gstRate') + ': 0–28', 'bad'); return; }
+        if (!(pc >= 0 && pc <= 1000)) { DM.toast(t('parcelCharge'), 'bad'); return; }
+        saveRestaurant({ name: f.name.value.trim(), name_ml: f.name_ml.value.trim() || null, upi_id: f.upi_id.value.trim() || null,
+          gst_rate: gst, gst_inclusive: f.gst_inclusive.checked, gstin: f.gstin.value.trim().toUpperCase() || null,
+          parcel_charge: pc, bill_footer: f.bill_footer.value.trim() || null });
       };
       if ($('reset')) $('reset').onclick = () => { if (confirm('Reset all demo data?')) { DMStore.reset(); location.reload(); } };
+      document.querySelectorAll('input[name=paper]').forEach((x) => (x.onchange = () => { localStorage.setItem('dm_paper', x.value); DM.toast(t('saved'), 'good'); }));
       if ($('sample')) $('sample').onclick = () => { DMStore._addSampleHistory(); DM.toast(t('saved'), 'good'); };
     }
 
@@ -330,6 +383,10 @@
         if (blob && editing) { editing._photos.push({ blob, preview: URL.createObjectURL(blob) }); drawPhotos(); }
         return;
       }
+      const oa = e.target.closest('[data-oe-add]');
+      if (oa && editing) { const L = oa.dataset.oeAdd === 'v' ? editing._variants : editing._addons; L.push({ name_en: '', name_ml: '', price: '' }); drawOpts(oa.dataset.oeAdd); return; }
+      const od = e.target.closest('[data-oe-del]');
+      if (od && editing) { const row = od.closest('[data-oe]'); const L = row.dataset.oe === 'v' ? editing._variants : editing._addons; L.splice(Number(row.dataset.k), 1); drawOpts(row.dataset.oe); return; }
       const pd = e.target.closest('[data-ph-del]'); if (pd) { editing._photos.splice(Number(pd.dataset.phDel), 1); drawPhotos(); return; }
       const pm = e.target.closest('[data-ph-main]'); if (pm) { const k = Number(pm.dataset.phMain); editing._photos.unshift(editing._photos.splice(k, 1)[0]); drawPhotos(); return; }
       if (e.target.closest('[data-del]')) {
@@ -389,6 +446,11 @@
         }
         await loadItems();
       } catch (err) { DM.toast(DM.errMsg(err), 'bad'); await loadItems(); }
+    });
+    $('modal').addEventListener('input', (e) => {
+      const row = e.target.closest('[data-oe]'); if (!row || !editing) return;
+      const L = row.dataset.oe === 'v' ? editing._variants : editing._addons;
+      L[Number(row.dataset.k)][e.target.dataset.f] = e.target.value;
     });
     $('pane').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches('.price-in')) e.target.blur(); });
     // language change: redraw the page but never an open form (keeps what was typed)

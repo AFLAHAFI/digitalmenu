@@ -1,4 +1,4 @@
-# Digital Menu — v2
+# Digital Menu — v3
 
 QR menu, ordering and billing for small Kerala hotels.
 Malayalam + English · works in any phone browser · installable (PWA).
@@ -24,6 +24,17 @@ Waiter "Ready to serve" ─► Served       Counter: bill ─► Paid (Cash/UPI)
 | `reports.html` | Manager, owner | Sales, bills, avg bill, cash/UPI, sales by day, busy hours, top dishes, by staff, kitchen time, Excel (CSV), print. |
 | `admin.html` | Manager, owner | Menu (photos + crop, description, ★ special, reorder, price, stock), **Staff logins**, Look (logo, banner, colour, category photos), Tables, Activity log, Settings. |
 | `menu.html?s=<token>` | Customer | Only from the waiter's QR. Closes when the bill is paid. |
+
+## v3 (Phase 5) features
+
+- **Sizes & add-ons** — e.g. Biryani Half / Full, + Extra egg. Customer and waiter choose; kitchen and bill show them.
+- **Parcel / takeaway** — 📦 New parcel in Waiter mode (name + phone), optional parcel charge.
+- **Payment sheet** at the counter — discount (₹ or %), GST (CGST + SGST, inclusive or extra), round-off,
+  Cash / UPI / Split, **UPI QR** with the exact amount, pay only some orders of a table, bill numbers.
+- **WhatsApp bill** and **printed bill / KOT** (58 or 80 mm; auto-print KOT on the kitchen device).
+- **Move / merge tables.**
+- **Stock counts** — set "how many left"; it counts down with every order, shows "Only N left",
+  goes out of stock at 0 and comes back if an order is cancelled.
 
 ## Roles
 
@@ -51,6 +62,7 @@ remove any login. Locked staff are blocked immediately.
 ## Set-up (already done for `demo-hotel`)
 
 1. Supabase → SQL Editor → run `supabase/schema.sql` (safe to re-run; upgrades older versions).
+   Already on v2? Running `supabase/upgrade-v3-phase5.sql` is enough.
 2. Deploy the Edge Function `supabase/functions/staff-admin` (`supabase functions deploy staff-admin`).
 3. `js/config.js`: Supabase URL + publishable key.
 4. New hotel: edit and run `supabase/new-hotel.sql`, then create the owner's login in Supabase → Authentication → Add user (same email). It links automatically.
@@ -71,12 +83,13 @@ js/outbox.js           offline order queue
 js/menu-ui.js          menu + cart + dish photos
 js/cropper.js          photo crop / resize
 js/charts.js           report charts
+js/print.js            bill / KOT printing, UPI QR, WhatsApp
 sw.js, manifest.json   install as app
 supabase/schema.sql    database (run once / to upgrade)
 supabase/functions/staff-admin/index.ts   staff logins
 supabase/new-hotel.sql add a hotel
 ```
 
-## Next (v3 ideas)
+## Next (Phase 6 ideas)
 
-Half/Full + add-ons · parcel orders · GST & discount · split/move bill · UPI QR on bill · WhatsApp bill · thermal printer KOT · stock counts · super-admin for many hotels + subscriptions.
+Super-admin for many hotels · subscriptions & trials · backups & error alerts · usage dashboard.

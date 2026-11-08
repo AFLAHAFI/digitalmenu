@@ -20,82 +20,83 @@
     <h2 class="sec" id="h-paid"></h2>
     <div class="paid-list" id="paid"></div>
   </div>
+  <div id="modal"></div>
 
   <script src="js/config.js"></script>
   <script src="js/vendor/supabase.js"></script>
   <script src="js/store.js"></script>
   <script src="js/common.js"></script>
   <script src="js/feed.js"></script>
+  <script src="js/vendor/qrcode.js"></script>
+  <script src="js/print.js"></script>
   <script>
   (async function () {
     const { t, esc, money } = DM;
-    const { r, me } = await DM.requireStaff('counter');
+    let { r, me } = await DM.requireStaff('counter');
     DM.demoBanner();
     document.title = t('counter') + ' · ' + r.name;
 
-    let open = [], paid = [], knownIds = null;
-    const busyTables = new Set();          // tables with a payment in progress (no double tap)
+    let open = [], bills = [], legacy = [], knownIds = null, busy = false;
+    const unchecked = new Set();     // orders the cashier untticked (pay later / split)
+    let pay = null;                  // state of the payment sheet
     const $ = (id) => document.getElementById(id);
+    const sum = (list) => list.reduce((s, o) => s + Number(o.total), 0);
 
-    function bills() {
+    // one card per dine-in table, one per parcel order
+    function groups() {
       const m = new Map();
       open.filter((o) => !o.paid_at).forEach((o) => {
-        if (!m.has(o.table_no)) m.set(o.table_no, []);
-        m.get(o.table_no).push(o);
+        const k = o.order_type === 'parcel' ? 'P' + o.id : 'T' + o.table_no;
+        if (!m.has(k)) m.set(k, []);
+        m.get(k).push(o);
       });
-      return [...m.entries()].sort((a, b) => a[0] - b[0]);
+      return [...m.entries()].sort((a, b) => (a[0][0] === b[0][0] ? (a[1][0].table_no - b[1][0].table_no) || a[1][0].created_at.localeCompare(b[1][0].created_at) : a[0] < b[0] ? 1 : -1));
     }
-    function mergedLines(list) {
-      const m = new Map();
-      list.forEach((o) => o.items.forEach((i) => {
-        const k = i.id + '|' + i.price;
-        if (!m.has(k)) m.set(k, { ...i, qty: 0 });
-        m.get(k).qty += i.qty;
-      }));
-      return [...m.values()];
-    }
-    const sum = (list) => list.reduce((s, o) => s + Number(o.total), 0);
+    const groupTitle = (list) => (list[0].order_type === 'parcel'
+      ? `📦 ${t('parcel')} #${list[0].order_no}${list[0].customer_name ? `<small>${esc(list[0].customer_name)}${list[0].customer_phone ? ' · ' + esc(list[0].customer_phone) : ''}</small>` : ''}`
+      : `${t('table')} ${list[0].table_no}`);
 
     function renderHeader() { $('top').innerHTML = DM.staffHeader(r, me, 'counter'); }
     function render() {
-      const cash = sum(paid.filter((o) => o.pay_method === 'cash'));
-      const upi = sum(paid.filter((o) => o.pay_method === 'upi'));
-      const b = bills();
+      const cash = bills.reduce((a, b) => a + Number(b.cash_amount), 0) + sum(legacy.filter((o) => o.pay_method === 'cash'));
+      const upi = bills.reduce((a, b) => a + Number(b.upi_amount), 0) + sum(legacy.filter((o) => o.pay_method === 'upi'));
+      const g = groups();
       $('stats').innerHTML = `
-        <div class="stat main"><div class="k">${t('todaySales')}</div><div class="v">${money(cash + upi)}</div></div>
+        <div class="stat main"><div class="k">${t('todaySales')}</div><div class="v">${money(cash + upi)}</div><div class="s">${bills.length} ${t('bills')}</div></div>
         <div class="stat"><div class="k">${t('cash')}</div><div class="v">${money(cash)}</div></div>
         <div class="stat"><div class="k">${t('upi')}</div><div class="v">${money(upi)}</div></div>
-        <div class="stat"><div class="k">${t('openBills')}</div><div class="v">${money(b.reduce((s, [, l]) => s + sum(l), 0))}</div></div>`;
-      $('h-open').textContent = `${t('openBills')} (${b.length})`;
-      $('bills').innerHTML = b.length ? b.map(([tno, list]) => `
-        <div class="bill" data-table="${tno}">
-          <div class="bill-h"><span class="tno">${t('table')} ${tno}</span><span class="amt">${money(sum(list))}</span></div>
+        <div class="stat"><div class="k">${t('openBills')}</div><div class="v">${money(g.reduce((s, [, l]) => s + sum(l), 0))}</div></div>`;
+      $('h-open').textContent = `${t('openBills')} (${g.length})`;
+      $('bills').innerHTML = g.length ? g.map(([key, list]) => {
+        const sel = list.filter((o) => !unchecked.has(o.id));
+        return `<div class="bill" data-g="${esc(key)}">
+          <div class="bill-h"><span class="tno">${groupTitle(list)}</span><span class="amt">${money(sum(list))}</span></div>
+          ${list.length > 1 ? `<div class="muted" style="font-size:12px;padding:6px 14px 0">${t('selectOrders')}</div>` : ''}
           ${list.map((o) => `<div class="bill-o">
-              <div class="oh"><span>#${o.order_no} · ${DM.clock(o.created_at)} · <span class="status s-${o.status}">${t('st_' + o.status)}</span></span>
+              <div class="oh"><span>${list.length > 1 ? `<input type="checkbox" class="bo-chk" data-chk="${o.id}" ${unchecked.has(o.id) ? '' : 'checked'}>` : ''}#${o.order_no} · ${DM.clock(o.created_at)} · <span class="status s-${o.status}">${t('st_' + o.status)}</span></span>
                 <button class="x-o" data-cancel="${o.id}">${t('cancel')}</button></div>
-              ${o.items.map((i) => `<div class="ol"><span>${i.qty} × ${esc(DM.itemName(i))}</span><span>${money(i.price * i.qty)}</span></div>`).join('')}
+              ${o.items.map((i) => `<div class="ol"><span>${i.qty} × ${esc(DM.lineName(i))}</span><span>${money(i.price * i.qty)}</span></div>`).join('')}
               ${o.note ? `<div class="muted" style="font-size:13px">📝 ${esc(o.note)}</div>` : ''}
             </div>`).join('')}
           <div class="bill-act">
-            <button class="btn primary" data-pay="cash" ${busyTables.has(tno) ? 'disabled' : ''}>${t('paidCash')}</button>
-            <button class="btn blue" data-pay="upi" ${busyTables.has(tno) ? 'disabled' : ''}>${t('paidUpi')}</button>
-            <button class="btn" data-print aria-label="${esc(t('print'))}">🖨</button>
+            <button class="btn primary" data-pay ${sel.length ? '' : 'disabled'}>💰 ${t('payBill')}${sel.length !== list.length ? ' · ' + money(sum(sel)) : ''}</button>
+            <button class="btn" data-preprint aria-label="${esc(t('print'))}">🖨</button>
+            ${list[0].order_type === 'dine_in' ? `<button class="btn" data-move aria-label="${esc(t('moveTable'))}">⇄</button>` : ''}
           </div>
-        </div>`).join('') : `<p class="muted pad">${t('noBills')}</p>`;
+        </div>`; }).join('') : `<p class="muted pad">${t('noBills')}</p>`;
 
-      const groups = new Map();
-      paid.forEach((o) => {
-        const k = o.table_no + '|' + o.paid_at;
-        if (!groups.has(k)) groups.set(k, { table: o.table_no, at: o.paid_at, method: o.pay_method, total: 0 });
-        groups.get(k).total += Number(o.total);
-      });
-      $('h-paid').textContent = `${t('paidToday')} (${groups.size})`;
-      $('paid').innerHTML = [...groups.values()].map((g) => `<div class="paid-row">
-          <span>${t('table')} ${g.table} · ${DM.clock(g.at)} · ${g.method === 'upi' ? t('upi') : t('cash')}</span><b>${money(g.total)}</b></div>`).join('')
-        || `<p class="muted pad">—</p>`;
+      $('h-paid').textContent = `${t('paidToday')} (${bills.length})`;
+      const methodTxt = (b) => (b.cash_amount > 0 && b.upi_amount > 0 ? `${t('cash')} + UPI` : b.upi_amount > 0 ? 'UPI' : t('cash'));
+      $('paid').innerHTML = bills.map((b) => `<div class="paid-row" data-bill="${b.id}">
+          <span>#${b.bill_no} · ${b.order_type === 'parcel' ? '📦 ' + t('parcel') : t('table') + ' ' + b.table_no} · ${DM.clock(b.created_at)} · ${methodTxt(b)}${b.discount > 0 ? ' · −' + money(b.discount) : ''}</span>
+          <b>${money(b.total)}</b></div>`).join('') || `<p class="muted pad">—</p>`;
     }
 
-    async function loadPaid() { paid = await DMStore.listPaidSince(r.id, DM.startOfToday()); render(); }
+    async function loadPaid() {
+      const [b, l] = await Promise.all([DMStore.listBillsSince(r.id, DM.startOfToday()), DMStore.listPaidSince(r.id, DM.startOfToday())]);
+      bills = b; legacy = l.filter((o) => !o.bill_id);
+      render();
+    }
 
     const feed = DM.orderFeed(r.id, {
       extraRefresh: loadPaid,
@@ -104,32 +105,104 @@
         const ids = open.map((x) => x.id);
         if (knownIds && ids.some((id) => !knownIds.has(id))) DM.beep(1, 520);
         knownIds = new Set(ids);
+        [...unchecked].forEach((id) => { if (!knownIds.has(id)) unchecked.delete(id); });
         render();
+        if (pay && pay.step === 'form' && !busy) {   // orders changed under the open payment sheet (not by our own payment)
+          const still = pay.orders.every((o) => open.some((x) => x.id === o.id && !x.paid_at));
+          if (!still) { closeModal(); DM.toast(t('error') + ' — ↻', 'warn'); }
+        }
       },
     });
 
-    function printBill(tno) {
-      const entry = bills().find(([n]) => n === tno); if (!entry) return;
-      const list = entry[1];
-      const el = document.createElement('div');
-      el.id = 'print-bill';
-      el.innerHTML = `<h3>${esc(r.name)}</h3>${r.name_ml ? `<div style="text-align:center">${esc(r.name_ml)}</div>` : ''}
-        <hr><div class="r"><span>${t('table')} ${tno}</span><span>${new Date().toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}</span></div><hr>
-        ${mergedLines(list).map((i) => `<div class="r"><span>${i.qty} × ${esc(i.name_en)}</span><span>${money(i.price * i.qty)}</span></div>`).join('')}
-        <hr><div class="r" style="font-size:16px;font-weight:bold"><span>${t('total')}</span><span>${money(sum(list))}</span></div><hr>
-        ${r.upi_id ? `<div style="text-align:center">UPI: ${esc(r.upi_id)}</div>` : ''}
-        <div style="text-align:center">${t('thanks')}</div>`;
-      document.body.appendChild(el);
-      document.body.classList.add('printing-bill');
-      let cleaned = false;
-      const done = () => { if (cleaned) return; cleaned = true; document.body.classList.remove('printing-bill'); el.remove(); };
-      window.addEventListener('afterprint', done, { once: true });
-      window.print();
-      setTimeout(done, 1500);
+    // ================= payment sheet =================
+    function openPay(list) {
+      pay = { step: 'form', orders: list, discType: 'rs', discVal: '', note: '', mode: 'cash', cash: '', phone: (list.find((o) => o.customer_phone) || {}).customer_phone || '' };
+      drawPay();
+    }
+    const discountRs = () => {
+      const sub = sum(pay.orders), v = Number(pay.discVal) || 0;
+      return Math.round(Math.min(sub, Math.max(0, pay.discType === 'pc' ? sub * v / 100 : v)) * 100) / 100;
+    };
+    function drawPay(keepFocus) {
+      const o0 = pay.orders[0];
+      if (pay.step === 'done') {
+        const b = pay.bill;
+        $('modal').innerHTML = `<div class="backdrop"></div><div class="sheet still"><div class="paid-done">
+            <div class="tick">✓</div><h2>${t('paidOk')} · ${money(b.total)}</h2>
+            <p class="muted">${t('billNo')} #${b.bill_no} · ${o0.order_type === 'parcel' ? t('parcel') : t('table') + ' ' + o0.table_no}</p>
+            <div class="form-grid">
+              <button class="btn big block" data-print-final>🖨 ${t('printBill')}</button>
+              <label>${t('custPhone')}<input id="wa-phone" type="tel" inputmode="tel" value="${esc(pay.phone || '')}" maxlength="15"></label>
+              <button class="btn big block" data-wa style="background:#25d366;border-color:#25d366;color:#fff">💬 ${t('whatsapp')}</button>
+              <button class="btn primary big block" data-close-pay>✓ ${t('ok')}</button>
+            </div></div></div>`;
+        return;
+      }
+      const m = DM.billMaths(r, sum(pay.orders), discountRs());
+      const cashPart = pay.mode === 'cash' ? m.total : pay.mode === 'upi' ? 0 : Math.min(m.total, Math.max(0, Number(pay.cash) || 0));
+      const upiPart = Math.round((m.total - cashPart) * 100) / 100;
+      const half = Math.round(m.gst_amount / 2 * 100) / 100;
+      const upiLink = upiPart > 0 ? DM.upiUrl(r, upiPart, (o0.order_type === 'parcel' ? 'Parcel ' : 'Table ') + (o0.order_type === 'parcel' ? o0.order_no : o0.table_no)) : '';
+      const focusId = keepFocus && document.activeElement ? document.activeElement.id : null;
+      $('modal').innerHTML = `<div class="backdrop" data-close-pay></div>
+        <form class="sheet still" id="pay-form" novalidate>
+          <div class="sheet-h"><h3>💰 ${o0.order_type === 'parcel' ? '📦 ' + t('parcel') + ' #' + o0.order_no : t('table') + ' ' + o0.table_no}</h3><button type="button" class="x" data-close-pay>✕</button></div>
+          ${DM.mergeLines(pay.orders).map((i) => `<div class="ol" style="display:flex;justify-content:space-between;font-size:14px"><span>${i.qty} × ${esc(DM.lineName(i))}</span><span>${money(i.price * i.qty)}</span></div>`).join('')}
+          <div class="pay-row" style="margin-top:8px"><span>${t('subtotal')}</span><b>${money(m.subtotal)}</b></div>
+          <div class="pay-row"><span>${t('discount')}</span>
+            <span class="disc-in"><input id="disc" type="number" inputmode="decimal" min="0" step="1" value="${esc(pay.discVal)}" placeholder="0">
+              <span class="seg"><label><input type="radio" name="dt" value="rs" ${pay.discType === 'rs' ? 'checked' : ''}>₹</label><label><input type="radio" name="dt" value="pc" ${pay.discType === 'pc' ? 'checked' : ''}>%</label></span></span></div>
+          ${m.discount > 0 ? `<div class="pay-row"><input id="dnote" placeholder="${esc(t('discountNote'))}" value="${esc(pay.note)}" maxlength="80" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--field)"></div>
+            <div class="pay-row"><span></span><span>− ${money(m.discount)}</span></div>` : ''}
+          ${m.gst_amount > 0 ? `<div class="pay-row"><span>${t('cgst')} ${m.gst_rate / 2}%${m.gst_inclusive ? ' (incl.)' : ''}</span><span>${money(half)}</span></div>
+            <div class="pay-row"><span>${t('sgst')} ${m.gst_rate / 2}%${m.gst_inclusive ? ' (incl.)' : ''}</span><span>${money(m.gst_amount - half)}</span></div>` : ''}
+          ${m.round_off ? `<div class="pay-row"><span>${t('roundOff')}</span><span>${m.round_off > 0 ? '+' : '−'} ${money(Math.abs(m.round_off))}</span></div>` : ''}
+          <div class="pay-row tot"><span>${t('grandTotal')}</span><span>${money(m.total)}</span></div>
+          <div class="seg" style="margin:10px 0">
+            <label><input type="radio" name="pm" value="cash" ${pay.mode === 'cash' ? 'checked' : ''}>💵 ${t('cash')}</label>
+            <label><input type="radio" name="pm" value="upi" ${pay.mode === 'upi' ? 'checked' : ''}>📱 UPI</label>
+            <label><input type="radio" name="pm" value="split" ${pay.mode === 'split' ? 'checked' : ''}>➗ ${t('split')}</label></div>
+          ${pay.mode === 'split' ? `<div class="two"><label>${t('cashPart')}<input id="cashpart" type="number" inputmode="decimal" min="0" max="${m.total}" value="${esc(pay.cash)}"></label>
+            <label>${t('upiPart')}<input value="${upiPart}" disabled></label></div>` : ''}
+          ${upiPart > 0 ? (upiLink ? `<div class="upi-qr">${DM.qrSvg(upiLink, 5)}<div style="font-size:13px">${t('scanUpi')} · <b>${money(upiPart)}</b></div><div style="font-size:12px">${esc(r.upi_id)}</div></div>`
+            : `<p class="muted" style="font-size:13px">${t('noUpi')}</p>`) : ''}
+          <label>${t('custPhone')}<input id="phone" type="tel" inputmode="tel" value="${esc(pay.phone)}" maxlength="15"></label>
+          <button class="btn primary big block" type="submit" ${busy ? 'disabled' : ''}>✓ ${t('confirmPay')} · ${money(m.total)}</button>
+        </form>`;
+      document.body.classList.add('noscroll');
+      if (focusId && $(focusId)) { const el = $(focusId); el.focus(); try { const v = el.value; el.value = ''; el.value = v; } catch (e) { /* number inputs */ } }
+      pay.calc = { total: m.total, cash: cashPart, upi: upiPart };
+    }
+    async function confirmPay(e) {
+      e.preventDefault();
+      if (busy || !pay) return;
+      if (pay.mode === 'split' && (pay.calc.cash <= 0 || pay.calc.upi <= 0)) { DM.toast(t('payMismatch', { n: pay.calc.total }), 'bad'); return; }
+      const P = pay;                  // keep this sheet even if the screen refreshes meanwhile
+      busy = true; drawPay();
+      try {
+        const bill = await DMStore.payBill(r.id, P.orders.map((o) => o.id), {
+          discount: discountRs(), discountNote: P.note || null, cash: P.calc.cash, upi: P.calc.upi, phone: P.phone || null });
+        P.step = 'done'; P.bill = bill; pay = P;
+        P.orders.forEach((o) => unchecked.delete(o.id));
+        busy = false; drawPay();
+        feed.resync(); loadPaid();
+      } catch (err) { busy = false; if (pay) drawPay(); DM.toast(DM.errMsg(err), 'bad'); }
+    }
+    function closeModal() { pay = null; $('modal').innerHTML = ''; document.body.classList.remove('noscroll'); }
+
+    function openMove(list) {
+      const from = list[0].table_no;
+      $('modal').innerHTML = `<div class="backdrop" data-close-pay></div><div class="sheet">
+          <div class="sheet-h"><h3>⇄ ${t('moveTo', { t: from })}</h3><button type="button" class="x" data-close-pay>✕</button></div>
+          <div class="move-grid">${Array.from({ length: r.tables_count }, (_, i) => i + 1).filter((n) => n !== from)
+            .map((n) => `<button class="tbtn" data-move-to="${n}" data-from="${from}">${n}</button>`).join('')}</div></div>`;
+      document.body.classList.add('noscroll');
     }
 
     document.body.addEventListener('click', async (e) => {
       DM.unlockAudio();
+      const card = e.target.closest('[data-g]');
+      const list = card ? (groups().find(([k]) => k === card.dataset.g) || [])[1] : null;
       const c = e.target.closest('[data-cancel]');
       if (c) {
         if (!confirm(t('cancelQ'))) return;
@@ -138,26 +211,44 @@
         catch (err) { c.disabled = false; DM.toast(DM.errMsg(err), 'bad'); }
         return;
       }
-      const p = e.target.closest('[data-pay]');
-      if (p) {
-        const tno = Number(p.closest('[data-table]').dataset.table);
-        if (busyTables.has(tno)) return;
-        const method = p.dataset.pay;
-        if (!confirm(t('paidQ', { t: tno, m: method === 'upi' ? t('upi') : t('cash') }))) return;
-        busyTables.add(tno); render();
-        try {
-          await DMStore.markTablePaid(r.id, tno, method);
-          DM.toast('✓ ' + t('table') + ' ' + tno, 'good');
-          await feed.resync(); await loadPaid();
-        } catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
-        busyTables.delete(tno); render();
-        return;
+      if (e.target.closest('[data-pay]') && list) { const sel = list.filter((o) => !unchecked.has(o.id)); if (sel.length) openPay(sel); return; }
+      if (e.target.closest('[data-preprint]') && list) { DM.printBill(r, list.filter((o) => !unchecked.has(o.id)).length ? list.filter((o) => !unchecked.has(o.id)) : list, null); return; }
+      if (e.target.closest('[data-move]') && list) { openMove(list); return; }
+      const mt = e.target.closest('[data-move-to]');
+      if (mt) {
+        if (busy) return; busy = true;
+        try { await DMStore.moveTable(r.id, Number(mt.dataset.from), Number(mt.dataset.moveTo)); DM.toast(t('moved', { t: mt.dataset.moveTo }), 'good'); closeModal(); feed.resync(); }
+        catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+        busy = false; return;
       }
-      const pr = e.target.closest('[data-print]');
-      if (pr) printBill(Number(pr.closest('[data-table]').dataset.table));
+      if (e.target.closest('[data-close-pay]')) { if (!busy) closeModal(); return; }
+      if (e.target.closest('[data-print-final]') && pay) { DM.printBill(r, pay.orders, pay.bill); return; }
+      if (e.target.closest('[data-wa]') && pay) { DM.whatsappBill(r, pay.orders, pay.bill, ($('wa-phone') || {}).value || pay.phone); return; }
+      const pr = e.target.closest('.paid-row[data-bill]');
+      if (pr) {
+        const b = bills.find((x) => x.id === pr.dataset.bill);
+        if (b) DM.toast(`#${b.bill_no}: ${money(b.subtotal)}${b.discount > 0 ? ' − ' + money(b.discount) : ''}${b.gst_amount > 0 ? ' + GST ' + money(b.gst_amount) : ''} = ${money(b.total)}`);
+      }
     });
-    document.addEventListener('dm:lang', () => { renderHeader(); render(); });
+    document.body.addEventListener('change', (e) => {
+      const ch = e.target.closest('[data-chk]');
+      if (ch) { if (ch.checked) unchecked.delete(ch.dataset.chk); else unchecked.add(ch.dataset.chk); render(); return; }
+      if (!pay || pay.step !== 'form') return;
+      if (e.target.name === 'dt') { pay.discType = e.target.value; drawPay(); }
+      if (e.target.name === 'pm') { pay.mode = e.target.value; drawPay(); }
+    });
+    document.body.addEventListener('input', (e) => {
+      if (!pay || pay.step !== 'form') return;
+      if (e.target.id === 'disc') { pay.discVal = e.target.value; drawPay(true); }
+      if (e.target.id === 'dnote') pay.note = e.target.value;
+      if (e.target.id === 'cashpart') { pay.cash = e.target.value; drawPay(true); }
+      if (e.target.id === 'phone') pay.phone = e.target.value;
+    });
+    document.body.addEventListener('submit', (e) => { if (e.target.id === 'pay-form') confirmPay(e); });
+    document.addEventListener('dm:lang', () => { renderHeader(); render(); if (pay) drawPay(); });
     setInterval(() => { if (document.visibilityState === 'visible') loadPaid().catch(() => {}); }, 60000);   // also rolls over at midnight
+    // settings (GST, UPI) may change while the counter is open
+    setInterval(async () => { try { const x = await DMStore.getRestaurant(r.slug); if (x) r = x; } catch (e) { /* offline */ } }, 120000);
     renderHeader();
   })();
   </script>

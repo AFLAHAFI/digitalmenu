@@ -17,12 +17,16 @@
     <div id="tables"></div>
     <div id="ordering" class="hidden">
       <div class="w-table-bar"><span id="w-table"></span>
-        <div class="acts"><button class="btn primary" id="qr-btn"></button><button class="btn" id="chg"></button></div></div>
+        <div class="acts"><button class="btn primary" id="qr-btn"></button><button class="btn" id="mv-btn">⇄</button><button class="btn" id="chg"></button></div></div>
+      <div id="parcel-info" class="card hidden" style="margin:10px 12px">
+        <div class="two"><label><span id="l-cname"></span><input id="cname" maxlength="40" autocomplete="off"></label>
+        <label><span id="l-cphone"></span><input id="cphone" type="tel" inputmode="tel" maxlength="15"></label></div></div>
       <div id="menu"></div>
     </div>
   </div>
   <div id="pane-ready" class="hidden"></div>
   <div id="qr"></div>
+  <div id="modal"></div>
 
   <script src="js/config.js"></script>
   <script src="js/vendor/supabase.js"></script>
@@ -49,7 +53,8 @@
     const isOpen = (n) => sessions.some((s) => s.table_no === n);
 
     // orders survive a network drop: kept on the phone, sent when back online
-    const outbox = DM.Outbox('w_' + r.slug, (job) => DMStore.waiterOrder({ rid: r.id, table: job.table, items: job.items, note: job.note, clientRef: job.clientRef }), {
+    const outbox = DM.Outbox('w_' + r.slug, (job) => DMStore.waiterOrder({ rid: r.id, table: job.table, items: job.items, note: job.note, clientRef: job.clientRef,
+      orderType: job.orderType, customerName: job.customerName, customerPhone: job.customerPhone }), {
       onSent: () => { DM.toast(t('queuedSent'), 'good'); feed && feed.resync(); },
       onFailed: (job, e) => DM.toast(t('table') + ' ' + job.table + ': ' + DM.errMsg(e), 'bad'),
       onChange: (n) => { queued = n; $('obx').innerHTML = n ? `<div class="outbox-bar">⏳ ${t('queuedN', { n })}</div>` : ''; },
@@ -64,8 +69,9 @@
     function renderTables() {
       const bill = new Map();
       orders.filter((o) => !o.paid_at && o.status !== 'cancelled').forEach((o) => bill.set(o.table_no, (bill.get(o.table_no) || 0) + Number(o.total)));
+      const parcels = orders.filter((o) => o.order_type === 'parcel' && !o.paid_at).length;
       $('tables').innerHTML = `<p class="center muted" style="margin:16px 0 0">${t('chooseTable')}</p>
-        <div class="table-picker">${Array.from({ length: r.tables_count }, (_, i) => {
+        <div class="table-picker"><button class="tbtn parcel-btn" data-t="0">${t('newParcel')}${parcels ? ` <small>${parcels} ${t('parcels')}</small>` : ''}</button>${Array.from({ length: r.tables_count }, (_, i) => {
           const n = i + 1, amt = bill.get(n);
           return `<button class="tbtn ${amt ? 'busy' : ''} ${isOpen(n) ? 'open' : ''}" data-t="${n}">${isOpen(n) ? '<span class="dot">📱</span>' : ''}${n}${amt ? `<small>${money(amt)}</small>` : ''}</button>`;
         }).join('')}</div>`;
@@ -73,8 +79,8 @@
     function renderReady() {
       const list = readyList();
       $('pane-ready').innerHTML = list.length ? list.map((o) => `<div class="ready-card" data-id="${o.id}">
-          <div><div class="rt">${t('table')} ${o.table_no}</div><div class="muted">#${o.order_no} · ${DM.ago(o.ready_at || o.created_at)}</div>
-            <ul>${o.items.map((i) => `<li>${i.qty} × ${esc(DM.itemName(i))}</li>`).join('')}</ul></div>
+          <div><div class="rt">${o.order_type === 'parcel' ? '📦 ' + t('parcel') + (o.customer_name ? ' · ' + esc(o.customer_name) : '') : t('table') + ' ' + o.table_no}</div><div class="muted">#${o.order_no} · ${DM.ago(o.ready_at || o.created_at)}</div>
+            <ul>${o.items.filter((i) => i.id !== 'parcel').map((i) => `<li>${i.qty} × ${esc(DM.lineName(i))}</li>`).join('')}</ul></div>
           <button class="btn primary big" data-served>${t('markServed')}</button></div>`).join('')
         : `<p class="center muted pad">${t('nothingReady')}</p>`;
     }
@@ -84,7 +90,12 @@
       $('tables').classList.toggle('hidden', table !== null);
       $('ordering').classList.toggle('hidden', table === null);
       if (table !== null) {
-        $('w-table').textContent = `${t('table')} ${table}`;
+        const isParcel = table === 0;
+        $('w-table').textContent = isParcel ? '📦 ' + t('parcel') : `${t('table')} ${table}`;
+        $('qr-btn').classList.toggle('hidden', isParcel);
+        $('mv-btn').classList.toggle('hidden', isParcel || !orders.some((o) => o.table_no === table && o.order_type === 'dine_in' && !o.paid_at));
+        $('parcel-info').classList.toggle('hidden', !isParcel);
+        $('l-cname').textContent = t('custName'); $('l-cphone').textContent = t('custPhone');
         $('qr-btn').textContent = '📱 ' + t('showQr');
         $('chg').textContent = t('changeTable');
         Object.entries(menus).forEach(([n, m]) => m.el.classList.toggle('hidden', Number(n) !== table));
@@ -125,15 +136,19 @@
         $('menu').appendChild(el);
         const ui = DM.MenuUI(el, {
           cartKey: 'dm_wcart_' + r.slug + '_' + n, compact: true,
-          sheetTitle: () => `${t('orderFor')} ${n}`,
+          sheetTitle: () => (n === 0 ? '📦 ' + t('parcel') : `${t('orderFor')} ${n}`),
           onSend: async (lines, note) => {
             let res;
-            try { res = await outbox.send({ table: n, items: lines, note }); }
+            const job = n === 0
+              ? { table: 0, items: lines, note, orderType: 'parcel', customerName: $('cname').value.trim(), customerPhone: $('cphone').value.trim() }
+              : { table: n, items: lines, note };
+            try { res = await outbox.send(job); }
             catch (e) {
               if (String(e.message).startsWith('OUT_OF_STOCK')) feed.resync();
               throw e;
             }
-            DM.toast(res && res.queued ? t('queued') : t('waiterSent', { t: n }), res && res.queued ? 'warn' : 'good');
+            DM.toast(res && res.queued ? t('queued') : (n === 0 ? '✓ ' + t('parcel') : t('waiterSent', { t: n })), res && res.queued ? 'warn' : 'good');
+            if (n === 0) { $('cname').value = ''; $('cphone').value = ''; }
             table = null; render(); window.scrollTo({ top: 0 });
             return true;
           },
@@ -171,6 +186,22 @@
       if (tt) { openTable(Number(tt.dataset.t)); return; }
       if (e.target.closest('#chg')) { table = null; render(); return; }
       if (e.target.closest('#qr-btn')) { openQr(table); return; }
+      if (e.target.closest('#mv-btn')) {
+        const from = table;
+        $('modal').innerHTML = `<div class="backdrop" data-mv-close></div><div class="sheet">
+          <div class="sheet-h"><h3>⇄ ${t('moveTo', { t: from })}</h3><button class="x" data-mv-close>✕</button></div>
+          <div class="move-grid">${Array.from({ length: r.tables_count }, (_, i) => i + 1).filter((x) => x !== from)
+            .map((x) => `<button class="tbtn" data-move-to="${x}">${x}</button>`).join('')}</div></div>`;
+        return;
+      }
+      if (e.target.closest('[data-mv-close]')) { $('modal').innerHTML = ''; return; }
+      const mt = e.target.closest('[data-move-to]');
+      if (mt) {
+        const to = Number(mt.dataset.moveTo);
+        try { await DMStore.moveTable(r.id, table, to); DM.toast(t('moved', { t: to }), 'good'); $('modal').innerHTML = ''; table = null; feed.resync(); loadSessions(); render(); }
+        catch (err) { DM.toast(DM.errMsg(err), 'bad'); }
+        return;
+      }
       if (e.target.closest('[data-qr-close]')) { qrTable = null; $('qr').innerHTML = ''; return; }
       if (e.target.closest('[data-close-table]')) {
         if (!confirm(t('closeTableQ', { t: qrTable }))) return;
